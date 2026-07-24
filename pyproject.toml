@@ -1,0 +1,31 @@
+# =============================================================================
+#  pyproject.toml - tooling configuration for LaTeX Studio.
+#
+#  This project is a runnable app, not a distributable package, so there is no
+#  [build-system]/[project] table - only tool configuration for pytest and
+#  coverage. Keeping it here means `pytest` and `coverage` "just work" with no
+#  extra flags.
+# =============================================================================
+
+[tool.pytest.ini_options]
+# Where tests live and how async tests are handled.
+testpaths = ["tests"]
+# pytest-asyncio: treat `async def test_*` as coroutine tests automatically.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# Fail if a test uses an unregistered marker (catches typos like the old,
+# silently-ignored `-m "not requires_latex"`).
+addopts = "--strict-markers -ra"
+markers = [
+    "requires_latex: test needs a working LaTeX distribution (auto-skipped when absent)",
+]
+
+[tool.coverage.run]
+source = ["backend"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# A realistic floor for this codebase; raise it as coverage grows.
+fail_under = 70

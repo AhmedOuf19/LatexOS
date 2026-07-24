@@ -1,0 +1,61 @@
+# =============================================================================
+#  CI - runs the test suite on every push / pull request.
+#
+#  The fast job (Windows + Linux) runs everything that does NOT need a LaTeX
+#  install; the @requires_latex tests auto-skip when pdflatex is absent, so no
+#  1 GB TeX install is needed on every push. A separate nightly job installs
+#  TinyTeX and runs the full suite including real compilation.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"   # nightly full run at 03:00 UTC
+
+jobs:
+  # ── Fast: no LaTeX required ────────────────────────────────────────────────
+  test:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Frontend id cross-reference (catches missing-element bugs)
+        run: python tests/check_frontend_ids.py
+      - name: Run tests (LaTeX tests auto-skip without a distribution)
+        run: pytest -v
+
+  # ── Nightly: full run with a real LaTeX install ───────────────────────────
+  test-latex:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install TinyTeX
+        run: |
+          wget -qO- "https://yihui.org/tinytex/install-bin-unix.sh" | sh
+          echo "$HOME/.TinyTeX/bin/x86_64-linux" >> "$GITHUB_PATH"
+      - name: Install extra LaTeX packages used by fixtures
+        run: tlmgr install latexmk biber biblatex
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run the full suite (including compilation)
+        run: pytest -v

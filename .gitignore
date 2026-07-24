@@ -1,20 +1,67 @@
-# ─── Virtual Environment ──────────────
-.venv/
+# =============================================================================
+#  .gitignore - keep the committed repo tiny (< ~5 MB) while the INSTALLED
+#  folder can grow to ~1 GB. Everything a user downloads at install time is
+#  generated locally and ignored here; only source + the small committed fonts
+#  are tracked.
+#
+#  NOTE: git does not accept trailing "# comments" on a pattern line, so every
+#  comment here is on its own line.
+# =============================================================================
 
-# ─── Python Cache ─────────────────────
+# ─── Portable dependencies (downloaded by install.bat, never committed) ──────
+# uv-managed CPython
+.venv/
+python/
+# uv download cache
+.uvcache/
+# bundled uv.exe (and friends)
+bin/
+# portable LaTeX distributions
+tinytex/
+texlive/
+# ~13 MB Monaco editor (re-fetched on install)
+frontend/vendor/monaco/
+# install manifest (machine-specific)
+.install-state.json
+
+# NOTE: frontend/vendor/fonts/ is intentionally COMMITTED (small, ~90 KB) so the
+# UI renders correctly even before/without the install step.
+
+# ─── Python cache ────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 
-# ─── Uploads (session data) ──────────
+# ─── Runtime data / logs ─────────────────────────────────────────────────────
+# per-session workspaces
 uploads/
+# application + installer logs
+logs/
 
-# ─── Test Cache ───────────────────────
+# ─── Tests ───────────────────────────────────────────────────────────────────
 .pytest_cache/
 htmlcov/
 .coverage
+coverage.xml
 
-# ─── IDE / OS ─────────────────────────
+# ─── LaTeX build artifacts (never commit compiled output) ────────────────────
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+# Compiled fixture PDFs (source .tex/.cls/.bib fixtures ARE committed):
+tests/fixtures/**/*.pdf
+
+# ─── IDE / OS ────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp

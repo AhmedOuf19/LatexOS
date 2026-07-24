@@ -1,48 +1,75 @@
 """
-file_manager.py – File upload, session workspace management, and validation.
+file_manager.py – Uploads, session workspaces, and path safety.
 
-Responsibilities:
-  - Create isolated UUID-based session directories under UPLOAD_DIR/
-  - Validate uploaded file types and total sizes
-  - Extract ZIP archives
-  - Auto-detect the main .tex entry point
-  - Clean up stale sessions
+Responsibilities
+----------------
+* Create isolated UUID-named session directories under ``uploads/``.
+* Validate uploaded file types and enforce size limits *while streaming*
+  (so an oversized file is rejected before it is fully buffered in memory).
+* Extract ZIP archives safely: guard against zip-slip, zip-bombs, disallowed
+  file types, and dangerous names (dotfiles such as ``.latexmkrc``).
+* Auto-detect the main ``.tex`` entry point.
+* Resolve editor file paths strictly inside the session (no traversal, no
+  Windows alternate-data-streams, no reserved device names).
 """
 
-import os
+from __future__ import annotations
+
+import io
 import re
 import shutil
 import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
-from fastapi import UploadFile, HTTPException
+from fastapi import HTTPException, UploadFile
 
 from backend.config import (
-    UPLOAD_DIR,
     ALLOWED_EXTENSIONS,
+    MAX_EXTRACTED_SIZE_BYTES,
     MAX_UPLOAD_SIZE_BYTES,
-    SESSION_TTL_SECONDS,
     MAX_UPLOAD_SIZE_MB,
+    MAX_ZIP_MEMBERS,
+    SESSION_TTL_SECONDS,
+    UPLOAD_DIR,
 )
+
+# Canonical UUID-v4 layout (8-4-4-4-12, lowercase hex). Anchored so nothing but
+# a real session id can address a workspace.
+SESSION_ID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
+
+# Windows reserved device names – never allowed as a file component.
+_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+# Bytes read per chunk when streaming an upload to disk.
+_CHUNK = 1024 * 1024  # 1 MiB
 
 
 # ─── Session Management ───────────────────────────────────────────────────────
 
 def create_session() -> str:
-    """Create a new session directory and return the session_id (UUID)."""
+    """Create a new session directory and return its id (a UUID-v4 string)."""
     session_id = str(uuid.uuid4())
-    session_dir = UPLOAD_DIR / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
+    (UPLOAD_DIR / session_id).mkdir(parents=True, exist_ok=True)
     return session_id
 
 
+def is_valid_session_id(session_id: str) -> bool:
+    """True if ``session_id`` is a canonical UUID-v4 string."""
+    return bool(SESSION_ID_RE.fullmatch(session_id))
+
+
 def get_session_dir(session_id: str) -> Path:
-    """Return the workspace path for a session, validating it exists."""
-    # Sanitize: session_id must be a plain UUID (no path traversal)
-    if not re.fullmatch(r"[0-9a-f-]{36}", session_id):
+    """Return the workspace for ``session_id`` (validating format + existence)."""
+    if not is_valid_session_id(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID format.")
     session_dir = UPLOAD_DIR / session_id
     if not session_dir.exists():
@@ -50,66 +77,86 @@ def get_session_dir(session_id: str) -> Path:
     return session_dir
 
 
+def touch_session(session_id: str) -> None:
+    """Refresh a session's last-access time so it is not reaped while in use."""
+    session_dir = UPLOAD_DIR / session_id
+    if session_dir.exists():
+        try:
+            (session_dir / ".last_access").write_text(str(time.time()))
+        except OSError:
+            pass
+
+
 def delete_session(session_id: str) -> None:
-    """Remove the entire session workspace directory."""
-    try:
-        session_dir = get_session_dir(session_id)
-        shutil.rmtree(session_dir, ignore_errors=True)
-    except HTTPException:
-        pass  # Already deleted or invalid – that's fine
+    """Remove a session workspace (no-op if it is already gone/invalid)."""
+    if not is_valid_session_id(session_id):
+        return
+    shutil.rmtree(UPLOAD_DIR / session_id, ignore_errors=True)
 
 
 def cleanup_stale_sessions() -> int:
-    """Delete session directories older than SESSION_TTL_SECONDS. Returns count deleted."""
+    """Delete sessions untouched for longer than ``SESSION_TTL_SECONDS``.
+
+    Last activity is read from the ``.last_access`` marker written on every
+    request; if that is missing we fall back to the directory mtime. Returns the
+    number of sessions removed.
+    """
     if not UPLOAD_DIR.exists():
         return 0
     now = time.time()
     deleted = 0
     for child in UPLOAD_DIR.iterdir():
-        if child.is_dir():
-            age = now - child.stat().st_mtime
-            if age > SESSION_TTL_SECONDS:
-                shutil.rmtree(child, ignore_errors=True)
-                deleted += 1
+        if not child.is_dir():
+            continue
+        marker = child / ".last_access"
+        try:
+            last = float(marker.read_text()) if marker.exists() else child.stat().st_mtime
+        except (OSError, ValueError):
+            last = child.stat().st_mtime
+        if now - last > SESSION_TTL_SECONDS:
+            shutil.rmtree(child, ignore_errors=True)
+            deleted += 1
     return deleted
 
 
 # ─── File Validation ──────────────────────────────────────────────────────────
 
 def _validate_extension(filename: str) -> None:
+    """Reject any filename whose extension is not whitelisted."""
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"File type '{suffix}' is not allowed. "
+            detail=f"File type '{suffix or '(none)'}' is not allowed. "
                    f"Allowed types: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
 
 
 def _safe_filename(filename: str) -> str:
+    """Reduce a filename to a single safe path component.
+
+    Strips any directory part, replaces characters that are dangerous on
+    Windows/POSIX, drops leading dots (so dotfiles like ``.latexmkrc`` cannot be
+    created), and rejects reserved device names.
     """
-    Sanitize a filename to prevent path traversal.
-    Replaces any directory separators and strips leading dots/slashes.
-    """
-    # Normalize separators, then take only the final component
     safe = Path(filename).name
-    # Remove characters that could be dangerous on Windows/Linux filesystems
     safe = re.sub(r'[<>:"|?*\x00-\x1f]', "_", safe)
-    safe = safe.strip(". ")
+    safe = safe.strip(". ")           # no leading/trailing dots or spaces
     if not safe:
         safe = "unnamed_file"
+    if safe.split(".")[0].lower() in _RESERVED_NAMES:
+        safe = "_" + safe
     return safe
 
 
-# ─── File Saving ──────────────────────────────────────────────────────────────
+# ─── File Saving (streamed) ───────────────────────────────────────────────────
 
-async def save_uploaded_files(
-    session_id: str, files: List[UploadFile]
-) -> List[str]:
-    """
-    Save a list of UploadFile objects into the session directory.
-    Handles ZIP extraction automatically.
-    Returns list of saved filenames (relative to session dir).
+async def save_uploaded_files(session_id: str, files: List[UploadFile]) -> List[str]:
+    """Stream uploaded files into the session directory.
+
+    Each file is written in bounded chunks with a running size total, so the
+    cumulative upload limit is enforced *before* memory is exhausted. ZIP
+    archives are streamed to a temp file and then extracted safely.
     """
     session_dir = get_session_dir(session_id)
     saved: List[str] = []
@@ -119,64 +166,123 @@ async def save_uploaded_files(
         filename = _safe_filename(upload.filename or "unnamed")
         _validate_extension(filename)
 
-        # Read content into memory (respecting size limit)
-        content = await upload.read()
-        total_size += len(content)
-
-        if total_size > MAX_UPLOAD_SIZE_BYTES:
-            # Clean up and reject
-            shutil.rmtree(session_dir, ignore_errors=True)
-            raise HTTPException(
-                status_code=413,
-                detail=f"Total upload size exceeds the {MAX_UPLOAD_SIZE_MB} MB limit.",
-            )
-
-        dest_path = session_dir / filename
-
-        # Handle ZIP archives
         if filename.lower().endswith(".zip"):
-            saved.extend(_extract_zip(content, session_dir))
+            # Stream the archive to a temp file (bounded), then extract.
+            tmp_zip = session_dir / f".upload-{uuid.uuid4().hex}.zip"
+            total_size = await _stream_to_file(upload, tmp_zip, total_size, session_dir)
+            try:
+                saved.extend(_extract_zip(tmp_zip, session_dir))
+            finally:
+                tmp_zip.unlink(missing_ok=True)
         else:
-            dest_path.write_bytes(content)
+            dest = session_dir / filename
+            total_size = await _stream_to_file(upload, dest, total_size, session_dir)
             saved.append(filename)
 
     return saved
 
 
-def _extract_zip(content: bytes, session_dir: Path) -> List[str]:
-    """
-    Extract a ZIP archive into the session directory.
-    Validates each extracted file against the whitelist.
-    Guards against zip-slip path traversal attacks.
-    """
-    import io
-    extracted: List[str] = []
+async def _stream_to_file(
+    upload: UploadFile, dest: Path, total_so_far: int, session_dir: Path
+) -> int:
+    """Write an upload to ``dest`` in chunks, enforcing the cumulative limit.
 
-    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-        for member in zf.infolist():
-            # Skip directories
-            if member.filename.endswith("/"):
+    Returns the new running total. Raises 413 and cleans up the session if the
+    limit is exceeded, without ever holding the whole file in memory.
+    """
+    total = total_so_far
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("wb") as out:
+        while True:
+            chunk = await upload.read(_CHUNK)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_SIZE_BYTES:
+                out.close()
+                shutil.rmtree(session_dir, ignore_errors=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Total upload size exceeds the {MAX_UPLOAD_SIZE_MB} MB limit.",
+                )
+            out.write(chunk)
+    return total
+
+
+def _extract_zip(source: Union[bytes, str, Path], session_dir: Path) -> List[str]:
+    """Safely extract a ZIP into the session directory.
+
+    ``source`` may be raw bytes (used by tests) or a path to a .zip file. Guards
+    applied to every member:
+      * **zip-slip** – the resolved path must stay inside the session.
+      * **type whitelist** – only allowed extensions are extracted (no more
+        extensionless-file loophole that let ``.latexmkrc`` through).
+      * **name sanitising** – each component is run through ``_safe_filename``.
+      * **zip-bomb** – member count, per-member size and cumulative extracted
+        size are all capped.
+    """
+    zf_source = io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else source
+    extracted: List[str] = []
+    total_out = 0
+    session_root = session_dir.resolve()
+
+    with zipfile.ZipFile(zf_source) as zf:
+        members = zf.infolist()
+        if len(members) > MAX_ZIP_MEMBERS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ZIP has too many entries (>{MAX_ZIP_MEMBERS}).",
+            )
+
+        for member in members:
+            if member.is_dir():
                 continue
 
-            # Zip-slip guard: resolve the final path and confirm it's inside session_dir
-            member_path = (session_dir / member.filename).resolve()
+            # Rebuild the relative path from sanitised components, preserving the
+            # folder structure but neutralising traversal and dangerous names.
+            raw_parts = [p for p in re.split(r"[\\/]+", member.filename) if p not in ("", ".", "..")]
+            if not raw_parts:
+                continue
+            safe_parts = [_safe_filename(p) for p in raw_parts]
+            target = (session_dir / Path(*safe_parts)).resolve()
+
+            # zip-slip guard: must remain inside the session.
             try:
-                member_path.relative_to(session_dir.resolve())
+                target.relative_to(session_root)
             except ValueError:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Malicious ZIP entry detected: '{member.filename}'"
+                    detail=f"Malicious ZIP entry detected: '{member.filename}'",
                 )
 
-            # Validate extension
-            suffix = Path(member.filename).suffix.lower()
-            if suffix not in ALLOWED_EXTENSIONS and suffix not in {"", ".tex"}:
-                continue  # Skip disallowed files silently
+            # Only extract whitelisted types – silently skip the rest.
+            if Path(target.name).suffix.lower() not in ALLOWED_EXTENSIONS:
+                continue
 
-            # Create subdirectory if needed
-            member_path.parent.mkdir(parents=True, exist_ok=True)
-            member_path.write_bytes(zf.read(member.filename))
-            extracted.append(member.filename)
+            # zip-bomb guards.
+            total_out += member.file_size
+            if member.file_size > MAX_EXTRACTED_SIZE_BYTES or total_out > MAX_EXTRACTED_SIZE_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="ZIP contents exceed the allowed extracted size.",
+                )
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Stream the member so a single huge entry is not read into RAM.
+            written = 0
+            with zf.open(member) as src, target.open("wb") as dst:
+                while True:
+                    chunk = src.read(_CHUNK)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > MAX_EXTRACTED_SIZE_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail="ZIP contents exceed the allowed extracted size.",
+                        )
+                    dst.write(chunk)
+            extracted.append("/".join(safe_parts))
 
     return extracted
 
@@ -184,112 +290,117 @@ def _extract_zip(content: bytes, session_dir: Path) -> List[str]:
 # ─── Main .tex Detection ──────────────────────────────────────────────────────
 
 def detect_main_tex(session_dir: Path) -> str | None:
-    """
-    Intelligently detect the main .tex entry point in a project.
+    """Detect the main ``.tex`` entry point.
 
-    Priority order:
-    1. A file named exactly 'main.tex' in the root
-    2. A single .tex file in the root (if only one exists)
-    3. The .tex file that contains \\documentclass (most comprehensive search)
-    4. The .tex file with \\begin{document} closest to root
+    Priority: an exact ``main.tex`` in the root → the only root-level .tex →
+    the .tex containing ``\\documentclass`` closest to the root →
+    any .tex with ``\\begin{document}`` → the first .tex found.
     """
     tex_files = list(session_dir.rglob("*.tex"))
-
     if not tex_files:
         return None
 
-    # Priority 1: main.tex in root
     root_main = session_dir / "main.tex"
     if root_main.exists():
         return "main.tex"
 
-    # Priority 2: single .tex file at root level
     root_tex = [f for f in tex_files if f.parent == session_dir]
     if len(root_tex) == 1:
         return root_tex[0].name
 
-    # Priority 3: search for \documentclass
     documentclass_files: List[Tuple[Path, int]] = []
     for tex in tex_files:
         try:
             text = tex.read_text(encoding="utf-8", errors="ignore")
-            if r"\documentclass" in text:
-                # Prefer files closer to root (shorter relative path)
-                depth = len(tex.relative_to(session_dir).parts)
-                documentclass_files.append((tex, depth))
         except OSError:
             continue
+        if r"\documentclass" in text:
+            depth = len(tex.relative_to(session_dir).parts)
+            documentclass_files.append((tex, depth))
 
     if documentclass_files:
-        # Sort by depth (ascending), then filename length (ascending)
         documentclass_files.sort(key=lambda x: (x[1], len(x[0].name)))
-        best = documentclass_files[0][0]
-        return str(best.relative_to(session_dir)).replace("\\", "/")
+        return _rel(documentclass_files[0][0], session_dir)
 
-    # Priority 4: any .tex with \begin{document}
     for tex in tex_files:
         try:
-            text = tex.read_text(encoding="utf-8", errors="ignore")
-            if r"\begin{document}" in text:
-                return str(tex.relative_to(session_dir)).replace("\\", "/")
+            if r"\begin{document}" in tex.read_text(encoding="utf-8", errors="ignore"):
+                return _rel(tex, session_dir)
         except OSError:
             continue
 
-    # Last resort: first tex file found
-    return str(tex_files[0].relative_to(session_dir)).replace("\\", "/")
+    return _rel(tex_files[0], session_dir)
+
+
+def _rel(path: Path, root: Path) -> str:
+    """Workspace-relative path with forward slashes (stable across OSes)."""
+    return str(path.relative_to(root)).replace("\\", "/")
 
 
 def list_session_files(session_dir: Path) -> List[dict]:
-    """
-    Return a tree-like structure of files in the session directory.
-    Each entry: {name, path, type, size}
+    """List the files in a session as ``{name, path, ext, size}`` entries.
+
+    Internal bookkeeping files (the ``.last_access`` marker, temp uploads) are
+    hidden from the user.
     """
     result = []
     for item in sorted(session_dir.rglob("*")):
-        if item.is_file():
-            rel = str(item.relative_to(session_dir)).replace("\\", "/")
-            result.append({
-                "name": item.name,
-                "path": rel,
-                "ext": item.suffix.lower(),
-                "size": item.stat().st_size,
-            })
+        if not item.is_file():
+            continue
+        name = item.name
+        if name == ".last_access" or name.startswith(".upload-"):
+            continue
+        result.append({
+            "name": name,
+            "path": _rel(item, session_dir),
+            "ext": item.suffix.lower(),
+            "size": item.stat().st_size,
+        })
     return result
 
 
+# ─── Secure file access for the editor endpoints ─────────────────────────────
+
 def _resolve_secure_path(session_dir: Path, filepath: str) -> Path:
-    """Resolve and validate a path to ensure it is strictly within the session dir."""
-    # Prevent absolute paths or root references in the user input
-    clean_filepath = filepath.lstrip("/\\")
-    target_path = (session_dir / clean_filepath).resolve()
-    
-    # Path traversal guard: must be inside session_dir
+    """Resolve an editor path and guarantee it stays inside the session.
+
+    Rejects traversal (``..``), Windows alternate-data-streams / drive-qualified
+    paths (a ``:`` in any component) and absolute paths.
+    """
+    clean = filepath.lstrip("/\\")
+    if ":" in clean:  # blocks C:\…, file.tex:$DATA, etc.
+        raise HTTPException(status_code=400, detail="Invalid path.")
+
+    target = (session_dir / clean).resolve()
     try:
-        target_path.relative_to(session_dir.resolve())
+        target.relative_to(session_dir.resolve())
     except ValueError:
         raise HTTPException(status_code=400, detail="Path traversal attempt detected.")
-        
-    return target_path
+    return target
 
 
 def read_file_content(session_dir: Path, filepath: str) -> bytes:
-    """Read file content securely from the session directory."""
-    target_path = _resolve_secure_path(session_dir, filepath)
-    if not target_path.exists():
+    """Read a file securely from the session workspace."""
+    target = _resolve_secure_path(session_dir, filepath)
+    if not target.exists():
         raise HTTPException(status_code=404, detail="File not found.")
-    if not target_path.is_file():
+    if not target.is_file():
         raise HTTPException(status_code=400, detail="Target is not a file.")
-        
-    return target_path.read_bytes()
+    return target.read_bytes()
 
 
 def write_file_content(session_dir: Path, filepath: str, content: bytes) -> None:
-    """Write file content securely to the session directory."""
-    target_path = _resolve_secure_path(session_dir, filepath)
-    
-    # Validate extension before saving
-    _validate_extension(target_path.name)
-    
-    # Create parent directories if they don't exist
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_bytes(content)
+    """Write a file securely into the session workspace.
+
+    Validates the extension and enforces the per-file size limit so a huge
+    editor save cannot exhaust memory or disk.
+    """
+    if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the {MAX_UPLOAD_SIZE_MB} MB limit.",
+        )
+    target = _resolve_secure_path(session_dir, filepath)
+    _validate_extension(target.name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(content)

@@ -1,201 +1,186 @@
 # LaTeX Studio 🎓
 
-A powerful web application for compiling LaTeX projects to PDF – inspired by Overleaf.
-Upload your entire LaTeX project (`.tex`, `.bib`, images, custom classes) and get a beautiful PDF in seconds.
+A self-contained, offline-friendly web app that compiles LaTeX projects to PDF —
+a lightweight Overleaf you run on your own machine. Upload your `.tex`, `.bib`,
+images and custom classes, edit in the browser, and get a PDF in seconds.
+
+> **Local tool, not a public server.** LaTeX Studio has no login and is meant to
+> run on your own computer (`127.0.0.1`). Do not expose it to a network. See
+> [SECURITY.md](SECURITY.md).
 
 ## Features
 
-- 📁 **Multi-file upload** – Drag & drop individual files or a `.zip` of your whole project
-- ✏️ **In-browser editor** – Full code editor with syntax highlighting (Monaco Editor)
-- 🖼️ **Image preview** – View images directly in the editor pane
-- 🔍 **Smart main file detection** – Automatically finds your `main.tex`
-- ⚙️ **Multiple engines** – Choose between `pdflatex`, `xelatex`, or `lualatex`
-- 📚 **Bibliography support** – Automatically handles `bibtex` and `biber`
-- 🎨 **Custom classes & styles** – Upload your `.cls` and `.sty` files
-- 📊 **Structured log viewer** – Color-coded errors, warnings, and bad-box alerts
-- 📥 **PDF download** – Download or preview inline in your browser
-- 🔒 **Security** – Shell escape disabled, path traversal blocked, file type whitelist
-- 🚀 **One-click setup** – Automatically installs Python & MiKTeX if needed
+- 📁 **Multi-file upload** – drag & drop files or a `.zip` of a whole project
+- ✏️ **In-browser editor** – Monaco with syntax highlighting (plain-textarea fallback)
+- 🖼️ **Image preview** in the editor pane
+- 🔍 **Smart main-file detection** – finds your `main.tex` automatically
+- ⚙️ **Three engines** – `pdflatex`, `xelatex`, `lualatex`
+- 📚 **Bibliography** – handles both `bibtex` and `biber` (biblatex)
+- 🎨 **Custom classes & styles** – upload your `.cls` / `.sty`
+- 📊 **Structured log viewer** – color-coded errors, warnings and bad boxes
+- 📥 **Inline preview + download**
+- 🔒 **Safe by default** – shell-escape off, file access confined, traversal & zip
+  attacks blocked, same-origin API
+- 📦 **Fully portable** – Python, LaTeX, the editor and fonts all install *into
+  the folder*; delete the folder to uninstall. Works offline after setup.
 
 ---
 
-## Quick Start (Beginner-Friendly)
+## Quick start (Windows)
 
-### Requirements
+1. **Download** or clone this folder.
+2. **Double-click `install.bat`** — one-time setup. It downloads and installs,
+   *into this folder*, everything the app needs (no admin rights, no changes to
+   your system):
+   - a portable Python (via [uv](https://github.com/astral-sh/uv))
+   - a portable LaTeX distribution ([TinyTeX](https://yihui.org/tinytex/))
+   - the Monaco code editor and the UI fonts
+3. **Double-click `Launch LaTeX Studio.bat`** — starts the app and opens your
+   browser. It picks a free port automatically and never touches other programs.
+4. To upgrade everything later, double-click **`update.bat`**.
 
-- **Windows 10 or 11**
-- **Internet connection** (only needed the first time to download dependencies)
+> First-time setup downloads a few hundred MB and takes a few minutes.
+> After that, launching is instant and works with no internet.
 
-### How to Run
-
-1. **Download** (or clone) this project folder
-2. **Double-click** `Launch LaTeX Studio.bat`
-3. **Wait** — the script will automatically:
-   - ✅ Find or install Python
-   - ✅ Create a virtual environment
-   - ✅ Install required Python packages
-   - ✅ Find or install MiKTeX (LaTeX compiler)
-   - ✅ Open your browser to the app
-4. **Done!** Upload your `.tex` files and click **Compile PDF**
-
-> **First-time setup** may take 3-5 minutes (downloading Python ~25 MB + MiKTeX ~250 MB).  
-> After that, launching takes only a few seconds.
-
-> **No admin rights required.** Everything installs to your user account.
+If you already have a system MiKTeX or TeX Live, the app will use it and the
+TinyTeX download is skipped.
 
 ---
 
-## How to Use
+## The three scripts
 
-1. **Drag & drop** your LaTeX files onto the upload zone (or click to browse)
-2. **Upload a single `.zip`** of your entire project for convenience
-3. The app **auto-detects** your main `.tex` file (or select it from the dropdown)
-4. **Edit files** directly in the browser using the built-in code editor
-5. Choose your **LaTeX engine** (pdflatex, xelatex, lualatex)
-6. Click **Compile PDF**
-7. View the **PDF inline** or **download** it
-8. Check the **log panel** for errors and warnings
+| Script | What it does |
+|--------|--------------|
+| `install.bat` | One-time setup. Installs everything into the folder. Safe to re-run. |
+| `Launch LaTeX Studio.bat` | Starts the app (no network). Picks a free port, opens the browser. |
+| `update.bat` | Updates Python packages, TinyTeX packages and the editor to the latest. |
+
+Each `.bat` is a thin wrapper over a well-commented PowerShell script in
+[`scripts/`](scripts/).
 
 ---
 
-## Supported File Types
+## How to use
+
+1. Drag & drop your LaTeX files (or a `.zip`) onto the upload zone.
+2. The app auto-detects your main `.tex` (or pick one from the dropdown).
+3. Edit files in the browser; press **Ctrl+S** to save.
+4. Choose an engine and click **Compile PDF**.
+5. Preview inline or download; check the log panel for errors and warnings.
+
+Your session is remembered across a browser refresh.
+
+---
+
+## Supported file types
 
 | Type | Extensions |
 |------|-----------|
-| LaTeX source | `.tex`, `.cls`, `.sty`, `.bst`, `.dtx`, `.ins` |
+| LaTeX source | `.tex`, `.cls`, `.sty`, `.bst`, `.ist`, `.dtx`, `.ins` |
 | Bibliography | `.bib` |
-| Images | `.png`, `.jpg`, `.jpeg`, `.pdf`, `.eps`, `.svg`, `.tif`, `.bmp` |
-| Fonts | `.ttf`, `.otf` |
-| Data | `.csv`, `.txt`, `.dat` |
-| Archive | `.zip` (auto-extracted) |
+| Images | `.png`, `.jpg`, `.jpeg`, `.pdf`, `.eps`, `.svg`, `.tif`, `.bmp`, `.gif` |
+| Fonts | `.ttf`, `.otf`, `.pfb`, `.pfm` |
+| Data | `.csv`, `.txt`, `.dat`, `.md` |
+| Archive | `.zip` (extracted safely) |
 
 ---
 
-## Running Tests
-
-```bash
-# Activate virtual environment first
-.venv\Scripts\activate
-
-# Run all tests
-pytest tests/ -v
-
-# Run without LaTeX-dependent tests (no MiKTeX required)
-pytest tests/ -v -m "not requires_latex"
-```
-
----
-
-## Project Structure
-
-```
-MD_to_Latex/
-├── Launch LaTeX Studio.bat  ← Double-click to run (auto-setup)
-├── run.py                   ← Server entry point
-├── requirements.txt
-├── README.md
-├── .gitignore
-├── backend/
-│   ├── main.py              ← FastAPI app + routes
-│   ├── compiler.py          ← LaTeX compilation engine
-│   ├── file_manager.py      ← Upload/session management
-│   ├── log_parser.py        ← Error/warning extraction
-│   └── config.py            ← Configuration
-├── frontend/
-│   ├── index.html           ← Main UI
-│   ├── style.css            ← Dark mode styling
-│   └── app.js               ← Frontend logic (Monaco editor, file tree)
-├── .venv/                   ← Virtual environment (auto-created)
-├── uploads/                 ← Session workspaces (auto-created)
-└── tests/
-    ├── test_compiler.py     ← Compilation scenario tests
-    ├── test_api.py          ← API endpoint tests
-    └── fixtures/            ← Sample LaTeX projects
-```
-
----
-
-## Advanced Configuration
-
-Override defaults via environment variables:
+## Configuration (environment variables)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LATEX_BIN_PATH` | auto-detect | Path to LaTeX binaries directory |
-| `LATEX_ENGINE` | `pdflatex` | Default engine |
-| `LATEX_TIMEOUT` | `120` | Max compile time (seconds) |
+| `LATEX_BIN_PATH` | auto-detect | Directory containing the LaTeX binaries |
+| `LATEX_ENGINE` | `pdflatex` | Default engine (invalid values fall back to pdflatex) |
+| `LATEX_TIMEOUT` | `120` | Max total compile time, seconds (a single hard budget) |
+| `LATEX_ALLOW_SHELL_ESCAPE` | `0` | Set `1` to allow `\write18` (minted). **Trusted docs only.** |
+| `LATEX_AUTO_INSTALL` | `1` | Auto-install missing packages (TinyTeX/TeX Live via `tlmgr`) |
 | `MAX_UPLOAD_MB` | `100` | Max total upload size |
-| `SESSION_TTL` | `3600` | Session lifetime (seconds) |
-
-Example:
-```bash
-set LATEX_BIN_PATH=C:\Program Files\MiKTeX\miktex\bin\x64
-set LATEX_TIMEOUT=180
-python run.py
-```
+| `MAX_EXTRACTED_MB` | `400` | Max total size extracted from a ZIP |
+| `SESSION_TTL` | `3600` | Session lifetime, seconds |
+| `LATEX_HOST` / `LATEX_PORT` | `127.0.0.1` / `8000` | Bind address |
+| `LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ---
 
-## Manual Setup (Advanced Users)
+## Project structure
 
-If you prefer to set things up manually instead of using the auto-launcher:
+```
+MD_to_Latex/
+├── install.bat                 ← one-time setup (run this first)
+├── Launch LaTeX Studio.bat     ← start the app
+├── update.bat                  ← update dependencies
+├── run.py                      ← server entry point + pre-flight checks
+├── requirements.txt
+├── pyproject.toml              ← pytest / coverage config
+├── README.md · LICENSE · CHANGELOG.md · SECURITY.md
+├── scripts/                    ← PowerShell install/run/update logic
+│   ├── common.ps1  install.ps1  run.ps1  update.ps1
+├── backend/
+│   ├── main.py                 ← FastAPI app, routes, security middleware
+│   ├── compiler.py             ← compilation engine (latexmk + manual passes)
+│   ├── file_manager.py         ← uploads, sessions, safe ZIP extraction
+│   ├── log_parser.py           ← structured error/warning extraction
+│   └── config.py               ← configuration + LaTeX auto-detection
+├── frontend/
+│   ├── index.html · style.css · app.js
+│   └── vendor/fonts/           ← self-hosted fonts (committed)
+│       └── (monaco/  ← downloaded by install, gitignored)
+└── tests/                      ← pytest suite + fixtures
+```
 
-### Prerequisites
+Generated at install time and **not** committed: `.venv/`, `python/`,
+`tinytex/`, `frontend/vendor/monaco/`, `uploads/`, `logs/`.
 
-1. **Python 3.10+** — [python.org](https://www.python.org/downloads/)
-2. **MiKTeX** — [miktex.org/download](https://miktex.org/download) (or TeX Live from [tug.org/texlive](https://tug.org/texlive/))
+---
 
-### Steps
+## Running the tests
 
 ```bash
-# 1. Create virtual environment
+# Fast: LaTeX-dependent tests auto-skip if no distribution is installed
+pytest -v
+
+# With coverage
+pytest --cov=backend
+```
+
+There is no need to pass `-m "not requires_latex"` — those tests skip themselves
+when LaTeX is absent.
+
+---
+
+## Manual setup (advanced)
+
+```bash
 python -m venv .venv
 .venv\Scripts\activate
-
-# 2. Install Python dependencies
 pip install -r requirements.txt
-
-# 3. Run pre-flight checks
-python run.py --check
-
-# 4. Start the application
-python run.py --port 8000 --open-browser
+python run.py --check          # diagnose the LaTeX install
+python run.py --open-browser   # start on http://127.0.0.1:8000
 ```
 
 ---
 
-## Troubleshooting
+## API reference
 
-### The .bat window opens and closes immediately
-- Right-click the `.bat` file → **Run as administrator** (only if per-user install fails)
-- Or open a Command Prompt, `cd` to the project folder, and run: `"Launch LaTeX Studio.bat"`
-
-### "pdflatex not found"
-- The launcher auto-installs MiKTeX, but if it failed:
-  - Install MiKTeX manually from [miktex.org/download](https://miktex.org/download)
-  - Or set `LATEX_BIN_PATH` environment variable
-- Run `python run.py --check` to diagnose
-
-### "Compilation failed" with missing packages
-- MiKTeX is configured for auto-install; first compilations may take longer
-- Open **MiKTeX Console** and enable automatic package installation if needed
-
-### Upload fails with large files
-- Default limit is 100 MB total. Override with `set MAX_UPLOAD_MB=200`
-
----
-
-## API Reference
-
-Full interactive API docs are available at `http://localhost:8000/docs` when the app is running.
+Interactive docs live at `http://127.0.0.1:<port>/docs` while the app runs.
 
 | Endpoint | Method | Description |
 |---------|--------|-------------|
-| `/api/status` | GET | Check LaTeX tool availability |
+| `/api/status` | GET | LaTeX tool availability + settings |
 | `/api/upload` | POST | Upload project files |
 | `/api/compile` | POST | Compile the project |
-| `/api/pdf/{session}` | GET | Download/view PDF |
-| `/api/log/{session}` | GET | Get compilation log |
-| `/api/files/{session}/{path}` | GET | Read a file |
-| `/api/files/{session}/{path}` | PUT | Write/save a file |
-| `/api/cleanup/{session}` | DELETE | Remove session |
+| `/api/pdf/{session}` | GET | View (or `?download=1` to save) the PDF |
+| `/api/log/{session}` | GET | Compilation log (`?parsed=true` for structured) |
+| `/api/files/{session}` | GET | List files |
+| `/api/files/{session}/{path}` | GET / PUT | Read / write a file |
+| `/api/cleanup/{session}` | DELETE | Remove a session |
+
+API calls require the per-instance token the page carries, and are refused from
+other web origins.
+
+---
+
+## License
+
+[MIT](LICENSE). Bundled/downloaded components (Monaco, the fonts, the LaTeX
+distribution) keep their own licenses — see the LICENSE file.

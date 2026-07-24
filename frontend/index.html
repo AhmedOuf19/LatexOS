@@ -7,11 +7,12 @@
   <meta name="description" content="Upload your LaTeX project files and compile them to a beautiful PDF instantly. Supports .tex, .bib, images, custom classes and more." />
   <meta name="keywords" content="LaTeX, PDF, compiler, Overleaf, online LaTeX editor, pdflatex" />
 
-  <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <!-- Per-instance security token, injected by the backend when it serves this
+       page. The frontend echoes it back on every API call (see app.js). -->
+  <meta name="studio-token" content="__STUDIO_TOKEN__" />
 
+  <!-- Fonts are self-hosted (see @font-face in style.css) so the app works
+       fully offline; system fonts are the fallback if the files are absent. -->
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -165,7 +166,10 @@
         </h2>
         <div class="toolbar-actions">
           <button id="toggleLogBtn" class="filter-btn" title="Show/Hide Log">Toggle Log</button>
-          <button id="downloadBtn" class="toolbar-btn hidden" aria-label="Download PDF">
+          <button id="openNewTabBtn" class="toolbar-btn hidden" aria-label="Open PDF in a new tab" title="Open PDF in a new tab">
+            <svg viewBox="0 0 20 20" fill="currentColor" width="15" height="15" aria-hidden="true"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
+          </button>
+          <button id="downloadBtn" class="toolbar-btn hidden" aria-label="Download PDF" title="Download PDF">
             <svg viewBox="0 0 20 20" fill="currentColor" width="15" height="15" aria-hidden="true"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
           </button>
         </div>
@@ -226,10 +230,14 @@
     </div>
   </footer>
 
-  <!-- Monaco Editor Loader -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+  <!-- Monaco Editor is vendored locally (frontend/vendor/monaco) by install so
+       the app needs no internet. If the loader is missing, app.js falls back to
+       a plain <textarea> editor rather than failing. -->
+  <script src="/static/vendor/monaco/vs/loader.js" onerror="window.__monacoMissing=true"></script>
   <script>
-    require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs' } });
+    if (window.require) {
+      require.config({ paths: { 'vs': '/static/vendor/monaco/vs' } });
+    }
   </script>
 
   <script src="/static/app.js"></script>
