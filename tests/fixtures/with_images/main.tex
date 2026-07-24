@@ -1,0 +1,22 @@
+\documentclass{article}
+\usepackage{graphicx}
+\title{Document with Images}
+\author{LaTeX Studio Test Suite}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{A Section with a Figure}
+Below is a figure included from the images directory.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.5\textwidth]{test_image}
+\caption{A test PNG image}
+\label{fig:test}
+\end{figure}
+
+See Figure~\ref{fig:test} for the included image.
+
+\end{document}

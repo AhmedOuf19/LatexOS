@@ -1,0 +1,23 @@
+# ─── Virtual Environment ──────────────
+.venv/
+
+# ─── Python Cache ─────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ─── Uploads (session data) ──────────
+uploads/
+
+# ─── Test Cache ───────────────────────
+.pytest_cache/
+htmlcov/
+.coverage
+
+# ─── IDE / OS ─────────────────────────
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
