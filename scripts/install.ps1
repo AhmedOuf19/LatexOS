@@ -89,14 +89,26 @@ if (Test-Path $tinytexBin) {
         if ($asset) {
             $zip = Join-Path $env:TEMP $asset.name
             if (Get-File $asset.browser_download_url $zip) {
-                Expand-Archive -Path $zip -DestinationPath $ProjectRoot -Force
-                # The archive contains a top-level 'TinyTeX' folder; normalise it.
-                $extracted = Join-Path $ProjectRoot 'TinyTeX'
-                if (Test-Path $extracted) {
-                    if (Test-Path (Join-Path $ProjectRoot 'tinytex')) { Remove-Item (Join-Path $ProjectRoot 'tinytex') -Recurse -Force }
-                    Rename-Item $extracted 'tinytex'
-                }
-                Remove-Item $zip -ErrorAction SilentlyContinue
+                # Extract to a SEPARATE temp dir first. Doing this avoids a
+                # case-insensitive-filesystem trap on Windows: the archive's
+                # top folder is 'TinyTeX', and a 'tinytex' guard would match and
+                # delete it. Using Windows' own tar.exe (bsdtar) is also far
+                # faster than Expand-Archive and handles C:\ paths correctly.
+                $tmp = Join-Path $env:TEMP 'tinytex-extract'
+                if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+                New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+                & "$env:SystemRoot\System32\tar.exe" -xf $zip -C $tmp
+                # Find the extracted distribution folder (name varies across
+                # releases: TinyTeX / .TinyTeX). Fall back to the temp dir itself
+                # if the archive had no single top-level folder.
+                $inner = Get-ChildItem $tmp -Directory |
+                    Where-Object { Test-Path (Join-Path $_.FullName 'bin') } |
+                    Select-Object -First 1
+                $srcDir = if ($inner) { $inner.FullName } else { $tmp }
+                $dst = Join-Path $ProjectRoot 'tinytex'
+                if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+                Move-Item $srcDir $dst
+                Remove-Item $zip, $tmp -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
     } catch {
@@ -124,8 +136,10 @@ if (Test-Path $monacoLoader) {
         $tmp = Join-Path $env:TEMP 'monaco-extract'
         if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
         New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-        # tar ships with Windows 10+ and extracts .tgz natively.
-        & tar -xzf $tgz -C $tmp
+        # Use Windows' own tar.exe (bsdtar, in System32) explicitly. Calling a
+        # bare `tar` can resolve to Git's GNU tar, which misreads a C:\ path as a
+        # remote host ("Cannot connect to C:"). bsdtar auto-detects the gzip.
+        & "$env:SystemRoot\System32\tar.exe" -xf $tgz -C $tmp
         $src = Join-Path $tmp 'package\min\vs'
         $dst = Join-Path $ProjectRoot 'frontend\vendor\monaco\vs'
         if (Test-Path $src) {

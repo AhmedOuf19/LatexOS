@@ -37,18 +37,43 @@ function Write-Err  { param([string]$Message) Write-Log $Message 'ERROR' }
 # --- Downloads ---------------------------------------------------------------
 function Get-File {
     <#
-      Download $Url to $Dest. If $Sha256 is supplied, the file is rejected
-      unless its hash matches (integrity / anti-tamper). Returns $true on
-      success, $false on any failure (never throws).
+      Download $Url to $Dest, retrying on transient failures. If $Sha256 is
+      supplied, the file is rejected unless its hash matches (integrity /
+      anti-tamper). Returns $true on success, $false on any failure (never
+      throws).
+
+      Uses System.Net.WebClient (streams straight to disk, low memory) and
+      silences the progress bar, because in Windows PowerShell 5.1 the
+      Invoke-WebRequest progress rendering makes large downloads many times
+      slower and more likely to drop the connection.
     #>
-    param([string]$Url, [string]$Dest, [string]$Sha256 = '')
-    try {
-        $dir = Split-Path -Parent $Dest
-        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        Write-Log "Downloading $Url"
-        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
-    } catch {
-        Write-Err "Download failed: $Url  ($($_.Exception.Message))"
+    param([string]$Url, [string]$Dest, [string]$Sha256 = '', [int]$Retries = 3)
+    $dir = Split-Path -Parent $Dest
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    $ok = $false
+    for ($attempt = 1; $attempt -le $Retries; $attempt++) {
+        $wc = $null
+        try {
+            Write-Log "Downloading $Url (attempt $attempt/$Retries)"
+            $wc = New-Object System.Net.WebClient
+            $wc.Headers.Add('User-Agent', 'LaTeXStudio-Installer')
+            $wc.DownloadFile($Url, $Dest)
+            $ok = $true
+            break
+        } catch {
+            Write-Warn "Download attempt $attempt failed: $($_.Exception.Message)"
+            if (Test-Path $Dest) { Remove-Item $Dest -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds ([Math]::Min(10, $attempt * 3))
+        } finally {
+            if ($wc) { $wc.Dispose() }
+        }
+    }
+    $ProgressPreference = $prevProgress
+    if (-not $ok) {
+        Write-Err "Download failed after $Retries attempts: $Url"
         return $false
     }
     if ($Sha256) {
