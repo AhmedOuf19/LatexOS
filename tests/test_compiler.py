@@ -83,6 +83,36 @@ class TestLogParser:
         result = parse_log("! LaTeX Error: File `nonexistentpackage.sty' not found.\n")
         assert any("nonexistentpackage" in e.message for e in result.errors)
 
+    def test_file_line_errors_without_whitelist_words(self):
+        """Regression: errors whose text lacked whitelisted keywords (Too many
+        }'s, Double superscript, Illegal unit, Misplaced alignment) used to be
+        silently dropped, so a broken document reported as clean."""
+        for msg in ("Too many }'s.", "Double superscript.",
+                    "Illegal unit of measure (pt inserted).",
+                    "Misplaced alignment tab character &."):
+            result = parse_log(f"./doc.tex:5: {msg}\nl.5 ...\n")
+            assert result.has_errors, f"must capture: {msg}"
+
+    def test_windows_drive_letter_path_error(self):
+        """Regression: errors reported from an absolute drive-lettered path
+        (folder-local TinyTeX) must still parse."""
+        raw = "c:/proj/tinytex/texmf-dist/tex/latex/foo/foo.sty:88: Undefined control sequence.\n"
+        result = parse_log(raw)
+        assert result.has_errors
+        assert result.errors[0].file.startswith("c:/")
+
+    def test_no_false_bbl_warning(self):
+        """Regression: a successful build that loads (./main.bbl) plus a benign
+        'No file main.out.' line must NOT report a missing bibliography."""
+        result = parse_log("(./main.bbl)\nNo file main.out.\nOutput written on main.pdf (1 page).\n")
+        assert not any(".bbl" in w.message for w in result.warnings)
+
+    def test_seventy_nine_char_line_does_not_swallow_error(self):
+        """Regression: a coincidental 79-char line must not merge with a
+        following '! ...' error and hide it."""
+        result = parse_log(("X" * 79) + "\n! Undefined control sequence.\nl.1 x\n")
+        assert result.has_errors
+
     def test_latex_warning_captured(self):
         result = parse_log("LaTeX Warning: Citation `smith2020' on page 1 undefined.\n")
         assert len(result.warnings) >= 1
@@ -241,6 +271,32 @@ class TestCompilerInternals:
         assert "pdflatex" in status
         for info in status.values():
             assert "available" in info and "path" in info
+
+    def test_installable_missing_files_classification(self):
+        """The on-demand installer must install package resources but never a
+        user asset (figure) or a forgotten \\input .tex."""
+        from backend.compiler import _installable_missing_files
+        log = (
+            "! LaTeX Error: File `listingsutf8.sty' not found.\n"
+            "! LaTeX Error: File `IEEEtran.bst' not found.\n"
+            "! LaTeX Error: File `pgfsys-pdftex.def' not found.\n"
+            "! LaTeX Error: File `chapter1.tex' not found.\n"
+            "! Package pdftex.def Error: File `logo.png' not found.\n"
+            "I couldn't open style file achemso.bst\n"
+        )
+        got = _installable_missing_files(log)
+        assert "listingsutf8.sty" in got and "IEEEtran.bst" in got
+        assert "pgfsys-pdftex.def" in got and "achemso.bst" in got
+        assert "chapter1.tex" not in got   # user \input, not a package
+        assert "logo.png" not in got       # user asset, not a package
+
+    def test_resolve_binary_finds_bat(self, tmp_path, monkeypatch):
+        """Regression: TinyTeX ships tlmgr as tlmgr.bat; the resolver must find
+        .bat/.cmd scripts, not only .exe."""
+        import backend.compiler as compiler
+        (tmp_path / "tlmgr.bat").write_text("@echo off")
+        monkeypatch.setattr(compiler, "LATEX_BIN_PATH", str(tmp_path))
+        assert compiler._resolve_binary("tlmgr").endswith("tlmgr.bat")
 
 
 # ════════════════════════════════════════════════════════════════════════════

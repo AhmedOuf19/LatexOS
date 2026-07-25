@@ -67,8 +67,10 @@ def _entry_to_dict(e: LogEntry) -> dict:
 _RE_BANG_ERROR = re.compile(r"^!\s+(.+)$")
 
 # "main.tex:12: Undefined control sequence." (with -file-line-error). The path
-# may be preceded by "./" and contains no ':' before the line number.
-_RE_FILELINE_ERROR = re.compile(r"^(?:\./)?([^:\n]+?):(\d+):\s*(.+)$")
+# may be preceded by "./" and may be a Windows absolute path with a drive
+# letter (e.g. "c:/.../foo.sty:88: ...") — the optional "[A-Za-z]:" prefix keeps
+# the leading drive-letter colon from ending the filename group.
+_RE_FILELINE_ERROR = re.compile(r"^(?:\./)?((?:[A-Za-z]:)?[^:\n]+?):(\d+):\s*(.+)$")
 
 # "l.42 \\badcommand" – the source line for a bang-style error.
 _RE_LINE_NUM = re.compile(r"^l\.(\d+)\s*(.*)")
@@ -190,37 +192,60 @@ def parse_log(raw_log: str) -> ParsedLog:
     return result
 
 
+def _starts_new_record(line: str) -> bool:
+    """True if ``line`` begins a new log record and so must NOT be merged onto
+    the previous line by the 79-column un-wrapper."""
+    return (
+        line.startswith(("!", "l.", "Overfull", "Underfull",
+                         "LaTeX Warning", "LaTeX Font Warning",
+                         "Package ", "Class "))
+        or bool(_RE_FILELINE_ERROR.match(line))
+    )
+
+
 def _unwrap(lines: List[str]) -> List[str]:
     """Best-effort un-wrap of TeX's 79-column hard wrapping.
 
-    TeX breaks long log lines at ``max_print_line`` (79). When a line is exactly
-    79 characters we join the next line onto it, so a message or "on input line
-    N" split across the wrap is not lost. Blank lines are never joined.
+    TeX breaks long log lines at ``max_print_line`` (79). We rejoin a
+    continuation when the accumulated line length is a positive multiple of 79
+    (so 3+ segments coalesce, not just the first) AND the next line does not
+    itself start a new error/warning record (so a line that happens to be
+    exactly 79 chars is not glued to a following ``! …`` error). Blank lines are
+    never joined.
     """
     out: List[str] = []
     for line in lines:
-        if out and len(out[-1]) == 79 and line and not line.startswith(" "):
-            out[-1] += line
+        prev = out[-1] if out else ""
+        if (prev and len(prev) % 79 == 0 and line
+                and not line.startswith(" ")
+                and not _starts_new_record(line)):
+            out[-1] = prev + line
         else:
             out.append(line)
     return out
 
 
+# A file:line: line that is actually a warning/box/info (not an error). In
+# practice TeX rewrites only real errors into the file:line: form, but we guard
+# defensively so a stray match is not mis-reported as an error.
+_RE_BENIGN_FILELINE = re.compile(
+    r"^(?:(?:LaTeX|Package|Class)\b.*\bWarning\b|Overfull\b|Underfull\b|Warning\b|Info\b)",
+    re.IGNORECASE,
+)
+
+
 def _looks_like_error(message: str) -> bool:
-    """Filter file:line: matches to real errors (avoid false positives on
-    ordinary parenthesised paths that happen to contain a colon+digits)."""
-    m = message.lower()
-    return (
-        "error" in m
-        or "undefined" in m
-        or "missing" in m
-        or "runaway" in m
-        or "not found" in m
-        or "no such file" in m
-        or "extra " in m
-        or "already defined" in m
-        or "emergency stop" in m
-    )
+    """Decide whether a ``file:line: message`` line is a real error.
+
+    Because the compiler runs with ``-file-line-error``, TeX prints every hard
+    error (undefined control sequence, "Too many }'s", "Double superscript",
+    "Illegal unit of measure", "Misplaced alignment tab", …) in the
+    ``file:line:`` form WITHOUT the leading ``! ``. So we treat any such line as
+    an error unless it is clearly a warning/box/info line — rather than relying
+    on a hand-maintained substring whitelist that silently dropped many real
+    errors.
+    """
+    return not _RE_BENIGN_FILELINE.match(message.strip())
 
 
 def _update_file_stack(line: str, stack: List[str]) -> None:
@@ -251,15 +276,25 @@ def _detect_missing_packages(raw_log: str, result: ParsedLog) -> None:
             ))
 
 
+_RE_NO_BBL = re.compile(r"No file .*\.bbl\b")
+_RE_NO_CITATION = re.compile(r"I found no \\?citation", re.IGNORECASE)
+
+
 def _detect_bibliography_issues(raw_log: str, result: ParsedLog) -> None:
-    """Surface common bibliography problems as warnings."""
-    if "No file" in raw_log and ".bbl" in raw_log:
+    """Surface common bibliography problems as warnings.
+
+    Both checks match a *single* line (via regex), not two unrelated substrings
+    anywhere in the log — otherwise a successful build that loads ``(./main.bbl)``
+    and also has a benign ``No file main.out.`` line would wrongly report a
+    missing bibliography.
+    """
+    if _RE_NO_BBL.search(raw_log):
         result.warnings.append(LogEntry(
             level="warning",
             message="Bibliography file (.bbl) not found. Make sure your .bib "
                     "file is uploaded and bibtex/biber ran successfully.",
         ))
-    if "I found no" in raw_log and r"\citation" in raw_log:
+    if _RE_NO_CITATION.search(raw_log):
         result.warnings.append(LogEntry(
             level="warning",
             message="BibTeX found no citations in the .aux file. Check that "

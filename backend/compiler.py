@@ -65,12 +65,23 @@ _RE_RERUN = re.compile(
     re.IGNORECASE,
 )
 
-# Missing-file markers used to drive on-demand package installation.
+# Missing-file markers used to drive on-demand package installation. We capture
+# the bare filename from the common "not found" phrasings (LaTeX, kpathsea and
+# bibtex), then filter out user assets in _installable_missing_files() so a
+# missing figure or a forgotten \input is never mistaken for a package.
 _RE_MISSING_FILE = re.compile(
-    r"(?:File `([^']+?\.(?:sty|cls|tex))' not found"
-    r"|Font \\[^=]*=([\w-]+)|"
-    r"Cannot find file `([^']+)')",
+    r"File `([^']+)' not found"
+    r"|Cannot find file `([^']+)'"
+    r"|couldn't open style file (\S+)"     # bibtex: I couldn't open style file IEEEtran.bst
+    r"|open file (\S+) for reading",
 )
+
+# Extensions that are USER assets (or user source), never installable packages.
+_NON_PACKAGE_EXTS = {
+    ".png", ".jpg", ".jpeg", ".pdf", ".eps", ".ps", ".svg", ".tif", ".tiff",
+    ".bmp", ".gif", ".csv", ".dat", ".txt", ".bib",
+    ".tex",  # a missing .tex is almost always a forgotten \input, not a package
+}
 
 # Maximum engine passes in the manual path (guards against an unstable document
 # looping forever) and maximum on-demand install/retry cycles.
@@ -146,6 +157,12 @@ class _Deadline:
     def expired(self) -> bool:
         return time.monotonic() >= self._end
 
+    def extend(self, seconds: float) -> None:
+        """Push the deadline out by ``seconds`` – used to give the compile back
+        the wall-clock spent downloading packages, so on-demand installs never
+        starve the final recompile."""
+        self._end += max(0.0, seconds)
+
 
 # ─── Binary Resolution ───────────────────────────────────────────────────────
 
@@ -155,8 +172,11 @@ def _resolve_binary(name: str) -> str:
     Prefers ``LATEX_BIN_PATH`` from config (the folder-local or detected distro)
     and falls back to PATH. Raises ``EnvironmentError`` if the tool is missing.
     """
+    # Try the Windows executable/script extensions. TinyTeX ships some tools as
+    # .bat scripts (notably tlmgr.bat), so .exe alone is not enough — missing
+    # .bat here silently disables on-demand package installation.
     if LATEX_BIN_PATH:
-        for candidate in (f"{name}.exe", name):
+        for candidate in (f"{name}.exe", f"{name}.bat", f"{name}.cmd", name):
             full = Path(LATEX_BIN_PATH) / candidate
             if full.exists():
                 return str(full)
@@ -343,71 +363,118 @@ def _uses_biblatex(workspace: Path) -> bool:
 
 
 # ─── On-demand package installation (TinyTeX / TeX Live) ─────────────────────
+# tlmgr operations hit the network, so they get their own fixed timeouts and do
+# NOT draw down the compile deadline (the caller adds the elapsed install time
+# back via _Deadline.extend, so the final recompile keeps its full budget).
+_TLMGR_SEARCH_TIMEOUT = 45
+_TLMGR_INSTALL_TIMEOUT = 180
 
-def _install_missing_packages(raw_log: str, deadline: _Deadline) -> bool:
-    """Try to install packages a failed compile reported as missing.
 
-    Only runs for TinyTeX/TeX Live (via ``tlmgr``); MiKTeX installs missing
-    packages on its own. Returns ``True`` if at least one package was installed
-    (so the caller should recompile). Best-effort and fully guarded – any
-    failure just means "installed nothing".
+def _tool_env() -> dict:
+    """Environment with the LaTeX bin dir first on PATH (for tlmgr/kpsewhich)."""
+    env = os.environ.copy()
+    if LATEX_BIN_PATH:
+        env["PATH"] = LATEX_BIN_PATH + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def _installable_missing_files(raw_log: str) -> list[str]:
+    """Extract missing files from a log that are plausibly installable packages
+    (i.e. not user images/data or a forgotten \\input .tex)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _RE_MISSING_FILE.finditer(raw_log):
+        name = next((g for g in m.groups() if g), None)
+        if not name:
+            continue
+        name = name.strip().strip("'\"")
+        ext = Path(name).suffix.lower()
+        if not ext or ext in _NON_PACKAGE_EXTS or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _kpsewhich_finds(fname: str, env: dict) -> bool:
+    """True if kpathsea can now locate ``fname`` (proof an install worked)."""
+    if not _has_binary("kpsewhich"):
+        return False
+    try:
+        rc, out, _err = _run([_resolve_binary("kpsewhich"), fname], Path.cwd(), 20, env)
+    except (TimeoutError, OSError, EnvironmentError):
+        return False
+    return rc == 0 and bool(out.strip())
+
+
+def _install_missing_packages(
+    raw_log: str, attempted: set[str], failures: list[str]
+) -> bool:
+    """Install packages a failed compile reported as missing.
+
+    Only runs for TinyTeX/TeX Live (via ``tlmgr``); MiKTeX installs on its own.
+    Installs EVERY newly-missing resource (not a fixed cap), records already-
+    attempted files in ``attempted`` to guarantee forward progress, and verifies
+    each install with kpsewhich — because ``tlmgr.bat`` always exits 0, even for
+    a package that does not exist. Human-readable problems are appended to
+    ``failures``. Returns True only if at least one file genuinely became
+    resolvable, so the caller knows a recompile is worthwhile.
     """
     if not AUTO_INSTALL_PACKAGES or not _has_binary("tlmgr"):
         return False
 
-    # Collect the missing file names (foo.sty, bar.cls, …) from the log.
-    missing: set[str] = set()
-    for m in _RE_MISSING_FILE.finditer(raw_log):
-        name = next((g for g in m.groups() if g), None)
-        if name:
-            missing.add(name.strip())
-    if not missing:
+    fresh = [f for f in _installable_missing_files(raw_log) if f not in attempted]
+    if not fresh:
         return False
 
     tlmgr = _resolve_binary("tlmgr")
+    env = _tool_env()
     installed_any = False
-    env = os.environ.copy()
-    if LATEX_BIN_PATH:
-        env["PATH"] = LATEX_BIN_PATH + os.pathsep + env.get("PATH", "")
 
-    for fname in list(missing)[:_MAX_INSTALL_RETRIES]:
-        if deadline.expired():
-            break
-        # Resolve the file to a TeX Live package name, then install it.
-        pkg = _tlmgr_package_for_file(tlmgr, fname, env, deadline)
+    for fname in fresh:
+        attempted.add(fname)  # never retry the same file (forward progress)
+        pkg = _tlmgr_package_for_file(tlmgr, fname, env)
         if not pkg:
+            failures.append(
+                f"'{fname}' is missing and no package could be found for it "
+                f"(the package repository may be unreachable)."
+            )
             continue
         try:
-            rc, _out, _err = _run(
-                [tlmgr, "install", pkg], Path.cwd(), deadline.remaining(), env
-            )
-            if rc == 0:
-                installed_any = True
+            _run([tlmgr, "install", pkg], Path.cwd(), _TLMGR_INSTALL_TIMEOUT, env)
         except (TimeoutError, OSError):
-            break
+            failures.append(f"Installing package '{pkg}' for '{fname}' timed out.")
+            continue
+        # tlmgr.bat's exit code is unreliable; confirm the file now resolves.
+        if _kpsewhich_finds(fname, env):
+            installed_any = True
+        else:
+            failures.append(f"Package '{pkg}' did not provide '{fname}' after install.")
     return installed_any
 
 
-def _tlmgr_package_for_file(
-    tlmgr: str, fname: str, env: dict, deadline: _Deadline
-) -> str | None:
-    """Map a missing file (foo.sty) to the tlmgr package that provides it."""
+def _tlmgr_package_for_file(tlmgr: str, fname: str, env: dict) -> str | None:
+    """Map a missing file to the tlmgr package that provides it.
+
+    Returns the package name only if the search positively resolves one. We do
+    NOT fall back to the filename stem, because that installs the wrong (or a
+    non-existent) package — e.g. tikz.sty is provided by 'pgf', not 'tikz'.
+    """
     try:
         rc, out, _err = _run(
             [tlmgr, "search", "--global", "--file", f"/{fname}"],
-            Path.cwd(), min(30, deadline.remaining()), env,
+            Path.cwd(), _TLMGR_SEARCH_TIMEOUT, env,
         )
     except (TimeoutError, OSError):
         return None
     if rc != 0:
-        # Fall back to the file stem as a best guess (often correct, e.g. tikz).
-        return Path(fname).stem
-    # tlmgr prints "pkgname:" lines above the matching file paths.
+        return None
+    # tlmgr prints "pkgname:" header lines above each matching file path.
     for line in out.splitlines():
         line = line.strip()
-        if line.endswith(":") and "/" not in line:
+        if line.endswith(":") and "/" not in line and not line.startswith("tlmgr"):
             return line[:-1]
-    return Path(fname).stem
+    return None
 
 
 # ─── Compilation Strategies ──────────────────────────────────────────────────
@@ -479,11 +546,15 @@ def _compile_manual_passes(
         out_chunks.append(f"=== {label} ({engine}) ===\n{out}")
         err_chunks.append(err)
 
-    # Pass 1 – generates the .aux / .bcf that tell us how to run the bibliography.
+    # Pass 1 – generates the .aux / .bcf / .idx / .glo that tell us which
+    # auxiliary tools (bibliography, index, glossary) to run.
+    if deadline.expired():
+        return returncode, "", ""
     run_engine("Pass 1")
 
-    # Bibliography pass, if the document actually asked for one.
+    # Bibliography, then index/glossary – the things latexmk would do for us.
     _run_bibliography(base_name, workspace, deadline, env, out_chunks, err_chunks)
+    _run_index_glossary(base_name, workspace, deadline, env, out_chunks, err_chunks)
 
     # Re-run until references settle, bounded by _MAX_MANUAL_PASSES total passes.
     prev_snapshot = _aux_snapshot(workspace, base_name)
@@ -522,10 +593,13 @@ def _run_bibliography(
             tool = "biber"
         elif r"\bibdata" in aux_text and _has_binary("bibtex"):
             tool = "bibtex"  # biblatex with backend=bibtex
-    elif (r"\bibdata" in aux_text or r"\citation" in aux_text) and _has_binary("bibtex"):
+    elif r"\bibdata" in aux_text and _has_binary("bibtex"):
+        # \bibdata (from \bibliography{...}) is the real signal that bibtex is
+        # needed. \citation alone means a hand-written thebibliography block,
+        # which needs no bibtex run (running it would just error on "no \bibdata").
         tool = "bibtex"
 
-    if not tool:
+    if not tool or deadline.expired():
         return
 
     try:
@@ -542,6 +616,38 @@ def _run_bibliography(
         header += f" exited {rc}"
     out_chunks.append(f"{header} ===\n{out}")
     err_chunks.append(err)
+
+
+def _run_index_glossary(
+    base_name: str, workspace: Path, deadline: _Deadline, env: dict,
+    out_chunks: list[str], err_chunks: list[str],
+) -> None:
+    """Run makeindex / makeglossaries for the manual path if the engine produced
+    an index (.idx) or glossary (.glo) file – mirroring what latexmk does
+    automatically. Each tool is resolved with the same .exe/.bat-aware resolver;
+    if the required tool is absent from a minimal TinyTeX, that is noted rather
+    than silently producing an empty index/glossary.
+    """
+    jobs = [
+        (".idx", "makeindex", [base_name + ".idx"]),
+        (".glo", "makeglossaries", [base_name]),
+        (".nlo", "makeindex", ["-s", "nomencl.ist", "-o", base_name + ".nls", base_name + ".nlo"]),
+    ]
+    for ext, tool, args in jobs:
+        if not (workspace / f"{base_name}{ext}").exists():
+            continue
+        if deadline.expired():
+            return
+        if not _has_binary(tool):
+            out_chunks.append(f"=== {tool} not available (index/glossary may be incomplete) ===")
+            continue
+        try:
+            rc, out, err = _run([_resolve_binary(tool)] + args, workspace,
+                                 deadline.remaining(), env)
+            out_chunks.append(f"=== {tool}{' exited ' + str(rc) if rc else ''} ===\n{out}")
+            err_chunks.append(err)
+        except (TimeoutError, EnvironmentError) as exc:
+            out_chunks.append(f"=== {tool} FAILED ===\n{exc}")
 
 
 # ─── Public Compilation API ──────────────────────────────────────────────────
@@ -580,11 +686,20 @@ def compile_project(
 
     returncode = -1
     stdout = stderr = ""
+    attempted_installs: set[str] = set()   # files we've already tried to install
+    install_failures: list[str] = []       # human-readable install problems
+    pre_pdf_mtime: float | None = None      # PDF mtime BEFORE the last compile
 
     try:
         # Compile, retrying after an on-demand package install if that helped.
         for attempt in range(_MAX_INSTALL_RETRIES + 1):
+            if deadline.expired():
+                break
             _clean_artifacts(tex_dir, base_name, workspace)
+            # Record whether a PDF survived the clean (e.g. locked by a viewer)
+            # so a stale, undeletable PDF cannot later be mistaken for fresh.
+            pdf_before = tex_dir / f"{base_name}.pdf"
+            pre_pdf_mtime = pdf_before.stat().st_mtime if pdf_before.exists() else None
 
             if use_latexmk:
                 returncode, stdout, stderr = _compile_with_latexmk(
@@ -605,14 +720,24 @@ def compile_project(
                     tex_filename, tex_dir, engine, deadline, env
                 )
 
-            # If the PDF is present we are done. Otherwise, see whether a
-            # missing package explains it and, if so, install and retry.
-            if _fresh_pdf(tex_dir, base_name) or deadline.expired():
+            # If a fresh PDF is present we are done. Otherwise, see whether
+            # missing packages explain it and, if so, install them and retry.
+            if _fresh_pdf(tex_dir, base_name, pre_pdf_mtime) or deadline.expired():
                 break
-            raw = _read_text_lossless(tex_dir / f"{base_name}.log") or (stdout + stderr)
-            if attempt < _MAX_INSTALL_RETRIES and _install_missing_packages(raw, deadline):
-                continue
-            break
+            if attempt >= _MAX_INSTALL_RETRIES:
+                break
+            # Feed the engine .log AND the bibtex/biber .blg (missing .bst errors
+            # live there, not in the .log) into the installer.
+            raw = _read_text_lossless(tex_dir / f"{base_name}.log")
+            blg = _read_text_lossless(tex_dir / f"{base_name}.blg")
+            raw = "\n".join(x for x in (raw, blg, stdout, stderr) if x)
+            # tlmgr hits the network; don't let that time count against the
+            # compile budget – extend the deadline by the install wall-time.
+            t0 = time.monotonic()
+            installed = _install_missing_packages(raw, attempted_installs, install_failures)
+            deadline.extend(time.monotonic() - t0)
+            if not installed:
+                break
 
     except TimeoutError as e:
         return CompilationResult(
@@ -635,9 +760,9 @@ def compile_project(
     parsed = parse_log(raw_log)
     summary = get_log_summary(parsed)
 
-    # ── Decide success: a fresh, non-empty PDF exists (artifacts were cleaned) ─
+    # ── Decide success: a FRESH, non-empty PDF exists (see _fresh_pdf) ────────
     pdf_file = tex_dir / f"{base_name}.pdf"
-    success = pdf_file.exists() and pdf_file.stat().st_size > 0
+    success = _fresh_pdf(tex_dir, base_name, pre_pdf_mtime)
     if not success:
         # Some setups drop the PDF at the workspace root instead.
         alt_pdf = workspace / f"{base_name}.pdf"
@@ -646,6 +771,10 @@ def compile_project(
 
     if not success:
         summary = f"Compilation failed (exit code {returncode}). " + summary
+        # Surface any on-demand install problems so a missing package that
+        # could not be fetched is not just a bare "File not found".
+        if install_failures:
+            summary += " Package install issues: " + " ".join(dict.fromkeys(install_failures))
 
     return CompilationResult(
         success=success,
@@ -659,13 +788,21 @@ def compile_project(
     )
 
 
-def _fresh_pdf(tex_dir: Path, base_name: str) -> bool:
-    """True if a non-empty PDF for ``base_name`` exists after a compile."""
-    for folder in (tex_dir,):
-        pdf = folder / f"{base_name}.pdf"
-        if pdf.exists() and pdf.stat().st_size > 0:
-            return True
-    return False
+def _fresh_pdf(tex_dir: Path, base_name: str, pre_mtime: float | None = None) -> bool:
+    """True if a non-empty PDF for ``base_name`` was produced by THIS run.
+
+    Normally artifacts are cleaned first, so mere existence proves freshness. But
+    if the previous PDF could not be deleted (locked by a viewer/AV scanner),
+    ``pre_mtime`` is its pre-compile timestamp; we then require the PDF on disk to
+    be strictly newer, so a stale locked PDF never reports a failed compile as a
+    success.
+    """
+    pdf = tex_dir / f"{base_name}.pdf"
+    if not (pdf.exists() and pdf.stat().st_size > 0):
+        return False
+    if pre_mtime is not None and pdf.stat().st_mtime <= pre_mtime:
+        return False
+    return True
 
 
 def _latexmk_infra_failed(tex_dir: Path, base_name: str, stderr: str) -> bool:

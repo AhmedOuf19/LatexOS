@@ -431,8 +431,16 @@ async function compileProject() {
     if (data.success) {
       state.pdfUrl = `${API_BASE}/api/pdf/${state.sessionId}?t=${Date.now()}`;
       showPdf(state.pdfUrl);
-      dom.lastCompileStatus.textContent = `✓ Compiled in ${duration}`;
-      showToast(`Compilation successful in ${duration}!`, 'success');
+      const errN = data.log?.errors?.length || 0;
+      if (errN > 0) {
+        // A PDF was produced, but LaTeX reported (recoverable) errors — be
+        // honest that the output may be incomplete rather than "successful".
+        dom.lastCompileStatus.textContent = `⚠ Compiled with ${errN} error(s) (${duration})`;
+        showToast(`Compiled with ${errN} error(s) — the PDF may be incomplete. Check the log.`, 'warning', 6000);
+      } else {
+        dom.lastCompileStatus.textContent = `✓ Compiled in ${duration}`;
+        showToast(`Compilation successful in ${duration}!`, 'success');
+      }
     } else {
       dom.pdfCompilingState.classList.add('hidden');
       dom.pdfEmptyState.classList.remove('hidden');

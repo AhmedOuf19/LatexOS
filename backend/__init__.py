@@ -8,4 +8,4 @@ The single source of truth for the application version lives here so that
 report the same number.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"

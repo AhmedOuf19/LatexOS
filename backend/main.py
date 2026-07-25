@@ -51,6 +51,8 @@ from backend.config import (
     ENGINES,
     FRONTEND_DIR,
     LOG_LEVEL,
+    MAX_UPLOAD_SIZE_BYTES,
+    MAX_UPLOAD_SIZE_MB,
     SESSION_GC_INTERVAL_SECONDS,
     UPLOAD_DIR,
 )
@@ -86,6 +88,21 @@ _LOCAL_ORIGIN_RE = re.compile(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)
 _last_pdf: Dict[str, Path] = {}
 _last_log: Dict[str, Path] = {}
 _compiling: set[str] = set()
+
+
+def _find_artifact_on_disk(session_dir: Path, ext: str) -> Path | None:
+    """Locate the compiled ``ext`` artifact (.pdf/.log) for a session's main
+    document on disk. Used to recover after a server restart, when the in-memory
+    _last_pdf/_last_log maps are empty but the file still exists."""
+    main = detect_main_tex(session_dir)
+    if main:
+        candidate = (session_dir / main).with_suffix(ext)
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return candidate
+    # Otherwise pick the newest matching artifact that has a sibling .tex.
+    matches = [p for p in session_dir.rglob(f"*{ext}")
+               if p.stat().st_size > 0 and p.with_suffix(".tex").exists()]
+    return max(matches, key=lambda p: p.stat().st_mtime) if matches else None
 
 
 # ─── Lifespan (startup / shutdown) ───────────────────────────────────────────
@@ -130,11 +147,17 @@ async def lifespan(app: FastAPI):
 
 
 async def _session_gc_loop() -> None:
-    """Sweep stale sessions on an interval until cancelled."""
+    """Sweep stale sessions on an interval until cancelled, and evict the
+    in-memory PDF/log entries for sessions whose workspace no longer exists (so
+    the maps cannot grow without bound on a long-running server)."""
     while True:
         await asyncio.sleep(SESSION_GC_INTERVAL_SECONDS)
         try:
             removed = await run_in_threadpool(cleanup_stale_sessions)
+            for sid in [s for s in _last_pdf if not (UPLOAD_DIR / s).exists()]:
+                _last_pdf.pop(sid, None)
+            for sid in [s for s in _last_log if not (UPLOAD_DIR / s).exists()]:
+                _last_log.pop(sid, None)
             if removed:
                 logger.info(f"Background cleanup removed {removed} stale session(s).")
         except Exception as exc:  # never let the loop die
@@ -285,10 +308,16 @@ async def compile_latex(
 @app.get("/api/pdf/{session_id}", summary="Download the compiled PDF")
 async def get_pdf(session_id: str, download: bool = False):
     """Stream the PDF produced by the last successful compile of this session."""
-    get_session_dir(session_id)  # validates format + existence (raises otherwise)
+    session_dir = get_session_dir(session_id)  # validates format + existence
     touch_session(session_id)
 
     pdf_path = _last_pdf.get(session_id)
+    if not pdf_path or not pdf_path.exists():
+        # Fall back to disk so a still-open browser survives a server restart
+        # (the in-memory map is empty after a restart, but the PDF is on disk).
+        pdf_path = _find_artifact_on_disk(session_dir, ".pdf")
+        if pdf_path:
+            _last_pdf[session_id] = pdf_path
     if not pdf_path or not pdf_path.exists():
         raise HTTPException(status_code=404, detail="No compiled PDF. Compile the project first.")
 
@@ -303,10 +332,14 @@ async def get_pdf(session_id: str, download: bool = False):
 @app.get("/api/log/{session_id}", summary="Get the compilation log")
 async def get_log(session_id: str, parsed: bool = False):
     """Return the log from the last compile (raw, or ?parsed=true structured)."""
-    get_session_dir(session_id)
+    session_dir = get_session_dir(session_id)
     touch_session(session_id)
 
     log_path = _last_log.get(session_id)
+    if not log_path or not log_path.exists():
+        log_path = _find_artifact_on_disk(session_dir, ".log")  # survive a restart
+        if log_path:
+            _last_log[session_id] = log_path
     if not log_path or not log_path.exists():
         raise HTTPException(status_code=404, detail="No log file. Compile the project first.")
 
@@ -340,9 +373,27 @@ async def read_file_endpoint(session_id: str, filepath: str):
 
 @app.put("/api/files/{session_id}/{filepath:path}", summary="Update a specific file")
 async def write_file_endpoint(session_id: str, filepath: str, request: Request):
-    """Overwrite a file's contents (size-capped, extension-validated)."""
+    """Overwrite a file's contents (size-capped, extension-validated).
+
+    The body is read in bounded chunks and rejected the moment it exceeds the
+    limit — mirroring the streamed upload path, so a huge PUT cannot buffer
+    unbounded memory (an oversized Content-Length is refused up front).
+    """
     session_dir = get_session_dir(session_id)
-    content = await request.body()
+
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_UPLOAD_SIZE_MB} MB limit.")
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_UPLOAD_SIZE_MB} MB limit.")
+        chunks.append(chunk)
+    content = b"".join(chunks)
+
     # Re-check existence after reading the body so a concurrent cleanup cannot be
     # "resurrected" into a ghost session by the write.
     if not (UPLOAD_DIR / session_id).exists():

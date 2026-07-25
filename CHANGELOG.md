@@ -3,6 +3,43 @@
 All notable changes to LaTeX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-07
+
+Fixes found by an adversarial review of the on-demand installer and by running
+real documents on the portable TinyTeX build.
+
+### Fixed
+- **On-demand package install now works on TinyTeX.** TinyTeX ships `tlmgr` as
+  `tlmgr.bat`; the binary resolver only looked for `.exe`, so missing packages
+  (e.g. `listingsutf8.sty`) were never installed and the compile failed. The
+  resolver now finds `.bat`/`.cmd` scripts.
+- **Broken documents are no longer reported as clean.** The log parser dropped
+  file:line errors whose text lacked a hard-coded keyword ("Too many }'s",
+  "Double superscript", "Illegal unit of measure", "Misplaced alignment tab",
+  …). It now treats every `file:line:` line as an error unless it is clearly a
+  warning, and the UI shows "compiled with N error(s)" when a PDF is produced
+  despite errors.
+- Errors reported from a Windows absolute (drive-lettered) path — i.e. from
+  inside the folder-local TinyTeX — are parsed correctly.
+- The installer now: installs every missing package (not a fixed cap of 9),
+  verifies each install actually resolved with `kpsewhich` (because `tlmgr.bat`
+  always exits 0), never guesses a package name from the filename stem
+  (`tikz.sty` → `pgf`, not `tikz`), skips user assets and forgotten `\input`
+  files, gives package downloads their own time budget so they don't starve the
+  compile, and reports a clear message when a package can't be fetched.
+- Missing bibliography styles (`.bst`) and driver/config/font-definition files
+  (`.def`/`.cfg`/`.fd`/`.ldf`/`.enc`) now trigger installation; the bibtex
+  `.blg` is scanned too.
+- The manual fallback path now runs `makeindex`/`makeglossaries` for indices and
+  glossaries, gates bibtex on `\bibdata` (not `\citation`), and respects the
+  timeout at every step.
+- A locked, undeletable stale PDF can no longer report a failed compile as
+  success (freshness is verified by modification time).
+- `/api/pdf` and `/api/log` fall back to disk after a server restart; the
+  in-memory maps are pruned by the background cleaner.
+- `PUT /api/files` now enforces the size limit while streaming, like uploads.
+- No false "bibliography not found" warning on successful builds.
+
 ## [1.1.0] - 2026-07
 
 A large correctness, security and portability overhaul.
