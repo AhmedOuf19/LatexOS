@@ -5,6 +5,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [1.1.1] - 2026-07
 
+### Changed
+- Raised the default limits so large projects work out of the box (all still
+  overridable via environment variables): compile timeout 120s → **600s** (plus
+  package-install time on top), max upload 100 MB → **500 MB**, ZIP extraction
+  cap → **2 GB**, ZIP member count → **10000**, log read → **32 MB**, and the
+  session inactivity timeout 1h → **6h**.
+
 Fixes found by an adversarial review of the on-demand installer and by running
 real documents on the portable TinyTeX build.
 

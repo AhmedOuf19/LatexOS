@@ -65,7 +65,10 @@ DEFAULT_ENGINE: str = _requested_engine if _requested_engine in ENGINES else "pd
 
 # ─── Compilation Settings ─────────────────────────────────────────────────────
 # Hard wall-clock budget for a single compile request (all passes combined).
-COMPILE_TIMEOUT: int = _get_int("LATEX_TIMEOUT", 120)
+# Generous by default so large books/theses and slow first-time compiles finish;
+# time spent auto-installing packages is added back on top of this. Raise it
+# further with LATEX_TIMEOUT if you compile very large documents.
+COMPILE_TIMEOUT: int = _get_int("LATEX_TIMEOUT", 600)  # 10 minutes
 
 # SECURITY: shell-escape lets a .tex run arbitrary OS commands via \write18.
 # It is required by a few packages (minted, some svg/gnuplot workflows) but is a
@@ -79,18 +82,21 @@ ALLOW_SHELL_ESCAPE: bool = _get_bool("LATEX_ALLOW_SHELL_ESCAPE", False)
 AUTO_INSTALL_PACKAGES: bool = _get_bool("LATEX_AUTO_INSTALL", True)
 
 # ─── File Upload Limits ───────────────────────────────────────────────────────
-MAX_UPLOAD_SIZE_MB: int = _get_int("MAX_UPLOAD_MB", 100)
+# Generous defaults for real-world projects with large images/PDF assets; all
+# overridable via the environment.
+MAX_UPLOAD_SIZE_MB: int = _get_int("MAX_UPLOAD_MB", 500)
 MAX_UPLOAD_SIZE_BYTES: int = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 # A ZIP can decompress to far more than its own size ("zip bomb"). Cap the total
 # extracted bytes and the number of members independently of the archive size.
+# Defaults to 4x the upload cap (so 2 GB with the 500 MB default).
 MAX_EXTRACTED_SIZE_BYTES: int = _get_int(
     "MAX_EXTRACTED_MB", MAX_UPLOAD_SIZE_MB * 4
 ) * 1024 * 1024
-MAX_ZIP_MEMBERS: int = _get_int("MAX_ZIP_MEMBERS", 2000)
+MAX_ZIP_MEMBERS: int = _get_int("MAX_ZIP_MEMBERS", 10000)
 
 # A runaway document can write a multi-GB .log; only read this many bytes of it.
-MAX_LOG_READ_BYTES: int = _get_int("MAX_LOG_READ_MB", 8) * 1024 * 1024
+MAX_LOG_READ_BYTES: int = _get_int("MAX_LOG_READ_MB", 32) * 1024 * 1024
 
 # Whitelisted file extensions (case-insensitive). Everything else is rejected on
 # upload and skipped during ZIP extraction.
@@ -115,8 +121,10 @@ def is_allowed_extension(filename: str) -> bool:
 
 
 # ─── Session Settings ─────────────────────────────────────────────────────────
-# Sessions untouched for this long are eligible for cleanup.
-SESSION_TTL_SECONDS: int = _get_int("SESSION_TTL", 3600)  # 1 hour
+# Sessions untouched for this long are eligible for cleanup. The clock is reset
+# on every request to a session, so this is an *inactivity* timeout; a generous
+# default keeps a project around across long editing breaks.
+SESSION_TTL_SECONDS: int = _get_int("SESSION_TTL", 21600)  # 6 hours
 # How often the background cleaner runs while the server is up (0 disables it;
 # a sweep still runs at startup).
 SESSION_GC_INTERVAL_SECONDS: int = _get_int("SESSION_GC_INTERVAL", 900)  # 15 min

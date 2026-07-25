@@ -91,12 +91,14 @@ Your session is remembered across a browser refresh.
 |----------|---------|-------------|
 | `LATEX_BIN_PATH` | auto-detect | Directory containing the LaTeX binaries |
 | `LATEX_ENGINE` | `pdflatex` | Default engine (invalid values fall back to pdflatex) |
-| `LATEX_TIMEOUT` | `120` | Max total compile time, seconds (a single hard budget) |
+| `LATEX_TIMEOUT` | `600` | Max total compile time, seconds (plus any package-install time on top) |
 | `LATEX_ALLOW_SHELL_ESCAPE` | `0` | Set `1` to allow `\write18` (minted). **Trusted docs only.** |
 | `LATEX_AUTO_INSTALL` | `1` | Auto-install missing packages (TinyTeX/TeX Live via `tlmgr`) |
-| `MAX_UPLOAD_MB` | `100` | Max total upload size |
-| `MAX_EXTRACTED_MB` | `400` | Max total size extracted from a ZIP |
-| `SESSION_TTL` | `3600` | Session lifetime, seconds |
+| `MAX_UPLOAD_MB` | `500` | Max total upload size |
+| `MAX_EXTRACTED_MB` | `2000` | Max total size extracted from a ZIP (defaults to 4× `MAX_UPLOAD_MB`) |
+| `MAX_ZIP_MEMBERS` | `10000` | Max number of files inside an uploaded ZIP |
+| `MAX_LOG_READ_MB` | `32` | Max size of a compile log read into memory |
+| `SESSION_TTL` | `21600` | Session inactivity timeout, seconds (6 hours) |
 | `LATEX_HOST` / `LATEX_PORT` | `127.0.0.1` / `8000` | Bind address |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
