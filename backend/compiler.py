@@ -479,14 +479,17 @@ def _tlmgr_package_for_file(tlmgr: str, fname: str, env: dict) -> str | None:
 
 # ─── Compilation Strategies ──────────────────────────────────────────────────
 
-def _latexmk_cmd(tex_file: str, engine: EngineType) -> list[str]:
+def _latexmk_cmd(tex_file: str, engine: EngineType,
+                 allow_shell_escape: bool | None = None) -> list[str]:
     """Build the latexmk command line for the chosen engine."""
     engine_flag = {
         "pdflatex": "-pdf",
         "xelatex": "-xelatex",
         "lualatex": "-lualatex",
     }[engine]
-    shell_flag = "-shell-escape" if ALLOW_SHELL_ESCAPE else "-no-shell-escape"
+    if allow_shell_escape is None:
+        allow_shell_escape = ALLOW_SHELL_ESCAPE
+    shell_flag = "-shell-escape" if allow_shell_escape else "-no-shell-escape"
     return [
         "latexmk",
         engine_flag,
@@ -502,17 +505,21 @@ def _latexmk_cmd(tex_file: str, engine: EngineType) -> list[str]:
 def _compile_with_latexmk(
     tex_file: str, workspace: Path, engine: EngineType,
     deadline: _Deadline, env: dict,
+    allow_shell_escape: bool | None = None,
 ) -> tuple[int, str, str]:
     """Run latexmk once (it handles its own multi-pass + bib logic)."""
     latexmk = _resolve_binary("latexmk")
-    cmd = _latexmk_cmd(tex_file, engine)
+    cmd = _latexmk_cmd(tex_file, engine, allow_shell_escape)
     cmd[0] = latexmk
     return _run(cmd, workspace, deadline.remaining(), env)
 
 
-def _engine_cmd(engine_bin: str, tex_file: str) -> list[str]:
-    """Build a single-pass engine command with the current shell-escape policy."""
-    shell_flag = "-shell-escape" if ALLOW_SHELL_ESCAPE else "-no-shell-escape"
+def _engine_cmd(engine_bin: str, tex_file: str,
+                allow_shell_escape: bool | None = None) -> list[str]:
+    """Build a single-pass engine command with the given shell-escape policy."""
+    if allow_shell_escape is None:
+        allow_shell_escape = ALLOW_SHELL_ESCAPE
+    shell_flag = "-shell-escape" if allow_shell_escape else "-no-shell-escape"
     return [
         engine_bin,
         "-interaction=nonstopmode",
@@ -524,7 +531,7 @@ def _engine_cmd(engine_bin: str, tex_file: str) -> list[str]:
 
 def _compile_manual_passes(
     tex_file: str, workspace: Path, engine: EngineType,
-    deadline: _Deadline, env: dict,
+    deadline: _Deadline, env: dict, allow_shell_escape: bool | None = None,
 ) -> tuple[int, str, str]:
     """Fallback multi-pass compile used when latexmk cannot run.
 
@@ -533,7 +540,7 @@ def _compile_manual_passes(
     """
     engine_bin = _resolve_binary(engine)
     base_name = Path(tex_file).stem
-    cmd = _engine_cmd(engine_bin, tex_file)
+    cmd = _engine_cmd(engine_bin, tex_file, allow_shell_escape)
 
     out_chunks: list[str] = []
     err_chunks: list[str] = []
@@ -657,6 +664,7 @@ def compile_project(
     main_tex: str,
     engine: EngineType = DEFAULT_ENGINE,
     timeout: int = COMPILE_TIMEOUT,
+    allow_shell_escape: bool | None = None,
 ) -> CompilationResult:
     """Compile a LaTeX project and return a structured result.
 
@@ -664,7 +672,13 @@ def compile_project(
     could not run (missing binary / Perl) – never merely because the document
     had errors. Build artifacts are cleaned first so ``success`` reflects this
     run, not a leftover PDF.
+
+    ``allow_shell_escape`` enables ``\\write18`` for THIS compile only (needed by
+    minted/svg). It defaults to the ``LATEX_ALLOW_SHELL_ESCAPE`` config value,
+    which is off — callers must opt in deliberately, per document.
     """
+    if allow_shell_escape is None:
+        allow_shell_escape = ALLOW_SHELL_ESCAPE
     start_time = time.monotonic()
     deadline = _Deadline(timeout)
 
@@ -703,7 +717,7 @@ def compile_project(
 
             if use_latexmk:
                 returncode, stdout, stderr = _compile_with_latexmk(
-                    tex_filename, tex_dir, engine, deadline, env
+                    tex_filename, tex_dir, engine, deadline, env, allow_shell_escape
                 )
                 # Fall back to manual passes ONLY on a latexmk infrastructure
                 # failure (no log produced or a Perl/executable error), not on
@@ -712,12 +726,12 @@ def compile_project(
                     tex_dir, base_name, stderr
                 ):
                     returncode, stdout, stderr = _compile_manual_passes(
-                        tex_filename, tex_dir, engine, deadline, env
+                        tex_filename, tex_dir, engine, deadline, env, allow_shell_escape
                     )
                     use_latexmk = False
             else:
                 returncode, stdout, stderr = _compile_manual_passes(
-                    tex_filename, tex_dir, engine, deadline, env
+                    tex_filename, tex_dir, engine, deadline, env, allow_shell_escape
                 )
 
             # If a fresh PDF is present we are done. Otherwise, see whether

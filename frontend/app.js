@@ -52,6 +52,7 @@ const dom = {
   mainFileSelector: $('mainFileSelector'), mainFileSelect: $('mainFileSelect'),
   clearSessionBtn: $('clearSessionBtn'),
   compileBtn: $('compileBtn'), compileBtnText: $('compileBtnText'), compileSpinner: $('compileSpinner'),
+  shellEscapeCheck: $('shellEscapeCheck'),
   engineSelect: $('engineSelect'), statusDot: $('statusDot'), statusText: $('statusText'),
   editorPanel: $('editorPanel'), editorFileTitle: $('editorFileTitle'),
   monacoContainer: $('monacoContainer'), imageViewer: $('imageViewer'), imageViewerImg: $('imageViewerImg'),
@@ -415,6 +416,8 @@ async function compileProject() {
     formData.append('engine', engine);
     const mainFile = dom.mainFileSelect.value || state.detectedMain || '';
     if (mainFile) formData.append('main_file', mainFile);
+    // Per-compile shell-escape opt-in (off unless the user ticked the box).
+    formData.append('shell_escape', dom.shellEscapeCheck?.checked ? 'true' : 'false');
 
     const res = await api('/api/compile', { method: 'POST', body: formData });
     const data = await res.json().catch(() => ({ success: false, summary: `HTTP ${res.status}` }));
@@ -662,6 +665,21 @@ function setupEventListeners() {
   dom.copyLogBtn.addEventListener('click', copyLog);
   dom.openNewTabBtn.addEventListener('click', () => { if (state.pdfUrl) window.open(state.pdfUrl, '_blank'); });
   dom.toggleLogBtn.addEventListener('click', () => dom.logSection.classList.toggle('hidden'));
+
+  // Remember the shell-escape choice between visits (it is off by default, and
+  // warns the first time it is switched on).
+  if (dom.shellEscapeCheck) {
+    try {
+      dom.shellEscapeCheck.checked = localStorage.getItem('latexStudio.shellEscape') === '1';
+    } catch { /* storage may be disabled */ }
+    dom.shellEscapeCheck.addEventListener('change', () => {
+      const on = dom.shellEscapeCheck.checked;
+      try { localStorage.setItem('latexStudio.shellEscape', on ? '1' : '0'); } catch { /* ignore */ }
+      if (on) {
+        showToast('Shell-escape enabled. Only compile documents you trust — they can run programs on your computer.', 'warning', 7000);
+      }
+    });
+  }
   [dom.filterAll, dom.filterErrors, dom.filterWarnings].forEach((btn) => {
     btn.addEventListener('click', () => applyLogFilter(btn.dataset.filter));
   });

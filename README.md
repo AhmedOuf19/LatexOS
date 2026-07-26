@@ -19,6 +19,8 @@ images and custom classes, edit in the browser, and get a PDF in seconds.
 - 🎨 **Custom classes & styles** – upload your `.cls` / `.sty`
 - 📊 **Structured log viewer** – color-coded errors, warnings and bad boxes
 - 📥 **Inline preview + download**
+- ✨ **`minted` support** – tick the **Shell-escape** box next to *Compile* when a
+  document needs it (off by default; only enable it for documents you trust)
 - 🔒 **Safe by default** – shell-escape off, file access confined, traversal & zip
   attacks blocked, same-origin API
 - 📦 **Fully portable** – Python, LaTeX, the editor and fonts all install *into
@@ -92,7 +94,7 @@ Your session is remembered across a browser refresh.
 | `LATEX_BIN_PATH` | auto-detect | Directory containing the LaTeX binaries |
 | `LATEX_ENGINE` | `pdflatex` | Default engine (invalid values fall back to pdflatex) |
 | `LATEX_TIMEOUT` | `600` | Max total compile time, seconds (plus any package-install time on top) |
-| `LATEX_ALLOW_SHELL_ESCAPE` | `0` | Set `1` to allow `\write18` (minted). **Trusted docs only.** |
+| `LATEX_ALLOW_SHELL_ESCAPE` | `0` | Set `1` to allow `\write18` (minted) for **every** compile. Normally you just tick the **Shell-escape** box in the UI instead. **Trusted docs only.** |
 | `LATEX_AUTO_INSTALL` | `1` | Auto-install missing packages (TinyTeX/TeX Live via `tlmgr`) |
 | `MAX_UPLOAD_MB` | `500` | Max total upload size |
 | `MAX_EXTRACTED_MB` | `2000` | Max total size extracted from a ZIP (defaults to 4× `MAX_UPLOAD_MB`) |

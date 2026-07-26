@@ -188,6 +188,9 @@ def parse_log(raw_log: str) -> ParsedLog:
 
     _detect_missing_packages(raw_log, result)
     _detect_bibliography_issues(raw_log, result)
+    _detect_shell_escape_needed(raw_log, result)
+    _detect_bookmark_problem(raw_log, result)
+    _detect_unicode_problem(raw_log, result)
     _dedupe(result)
     return result
 
@@ -300,6 +303,84 @@ def _detect_bibliography_issues(raw_log: str, result: ParsedLog) -> None:
             message="BibTeX found no citations in the .aux file. Check that "
                     r"\cite{} commands exist in your .tex file.",
         ))
+
+
+# Signs that the document needs shell-escape (minted, svg, gnuplot…).
+_RE_SHELL_ESCAPE_NEEDED = re.compile(
+    r"minted executable is unavailable or disabled"
+    r"|Shell escape (?:disabled|feature is not enabled)"
+    r"|You must invoke LaTeX with the -shell-escape flag"
+    r"|\\write18 is disabled",
+    re.IGNORECASE,
+)
+
+
+def _detect_shell_escape_needed(raw_log: str, result: ParsedLog) -> None:
+    """Tell the user exactly how to fix a shell-escape failure.
+
+    Packages like minted have to run an external program, which is blocked
+    unless shell-escape is enabled. The raw LaTeX message never says how to
+    enable it, so we add one actionable entry.
+    """
+    if _RE_SHELL_ESCAPE_NEEDED.search(raw_log):
+        result.errors.append(LogEntry(
+            level="error",
+            message="This document needs shell-escape (minted / svg / gnuplot). "
+                    "Tick the 'Shell-escape' box next to the Compile button and "
+                    "compile again. Only enable it for documents you trust - it "
+                    "lets the document run programs on your computer.",
+        ))
+
+
+# hyperref bookmark broken by a fragile command in a section title.
+_RE_BOOKMARK_RUNAWAY = re.compile(
+    r"File ended while scanning use of \\@@BOOKMARK|Runaway argument.*BOOKMARK",
+    re.DOTALL,
+)
+
+
+def _detect_bookmark_problem(raw_log: str, result: ParsedLog) -> None:
+    """Explain the classic hyperref \\@@BOOKMARK runaway error.
+
+    It means a section/chapter title contains something hyperref cannot put in a
+    PDF bookmark – most often \\url{...} or a raw underscore.
+    """
+    if _RE_BOOKMARK_RUNAWAY.search(raw_log):
+        result.errors.append(LogEntry(
+            level="error",
+            message="A section/chapter title contains something hyperref cannot put "
+                    "in a PDF bookmark - most often \\url{...} (it emits a raw % "
+                    "that comments out the rest of the bookmark file). Replace it in "
+                    "the TITLE with plain text, e.g. "
+                    "\\section{Spec of \\texttt{MY\\_NAME}} instead of "
+                    "\\section{Spec of \\url{MY_NAME}}, or wrap it with "
+                    "\\texorpdfstring{...}{...}. Check every title, not just the first.",
+        ))
+
+
+# pdflatex cannot typeset arbitrary Unicode (Greek letters, subscripts, …).
+_RE_UNICODE_CHAR = re.compile(r"Unicode character (.*?) \(U\+([0-9A-Fa-f]+)\)")
+
+
+def _detect_unicode_problem(raw_log: str, result: ParsedLog) -> None:
+    """Explain "Unicode character ... not set up for use with LaTeX".
+
+    This happens with pdflatex, which only understands a limited character set.
+    Switching the engine to xelatex or lualatex fixes it outright, and this app
+    has an engine selector — so say so.
+    """
+    chars = {m.group(2).upper() for m in _RE_UNICODE_CHAR.finditer(raw_log)}
+    if not chars:
+        return
+    sample = ", ".join(f"U+{c}" for c in sorted(chars)[:6])
+    result.errors.append(LogEntry(
+        level="error",
+        message=f"Your document uses Unicode characters ({sample}) that pdflatex "
+                f"cannot typeset. Easiest fix: change the engine (top right) to "
+                f"xelatex or lualatex, which support Unicode directly. "
+                f"Alternatively replace them with LaTeX commands, "
+                f"e.g. $\\theta$ instead of a literal Greek theta.",
+    ))
 
 
 def _dedupe(result: ParsedLog) -> None:

@@ -128,6 +128,13 @@
 
       <!-- Compile Button -->
       <div class="compile-actions">
+        <!-- Shell-escape opt-in. OFF by default: it lets a document run programs
+             on this computer, but packages like minted require it. -->
+        <label class="shell-escape-toggle" for="shellEscapeCheck"
+               title="Required by minted, svg and gnuplot. Only enable for documents you trust — it lets the document run programs on your computer.">
+          <input type="checkbox" id="shellEscapeCheck" />
+          <span>Shell-escape <span class="shell-escape-hint">(needed for minted)</span></span>
+        </label>
         <button id="compileBtn" class="compile-btn" disabled aria-label="Compile LaTeX project to PDF">
           <span class="compile-btn-inner">
             <svg class="compile-icon" viewBox="0 0 20 20" fill="currentColor" width="18" height="18" aria-hidden="true">

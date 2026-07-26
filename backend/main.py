@@ -47,6 +47,7 @@ from backend import __version__
 from backend.compiler import check_latex_available, compile_project
 from backend.config import (
     ALLOW_SHELL_ESCAPE,
+    COMPILE_TIMEOUT,
     DEFAULT_ENGINE,
     ENGINES,
     FRONTEND_DIR,
@@ -251,6 +252,7 @@ async def compile_latex(
     session_id: Annotated[str, Form(description="Session ID from /api/upload")],
     main_file: Annotated[str | None, Form(description="Main .tex (auto-detected if omitted)")] = None,
     engine: Annotated[str, Form(description="pdflatex | xelatex | lualatex")] = DEFAULT_ENGINE,
+    shell_escape: Annotated[bool, Form(description="Allow \\write18 for THIS compile (minted). Trusted documents only.")] = False,
 ):
     """Compile the project and return status, structured log, and the PDF URL."""
     if engine not in ENGINES:
@@ -277,10 +279,18 @@ async def compile_latex(
         raise HTTPException(status_code=409, detail="A compile is already running for this session.")
     _compiling.add(session_id)
 
-    logger.info(f"[{session_id}] Compiling '{main_file}' with {engine} (shell-escape={ALLOW_SHELL_ESCAPE}).")
+    # Shell-escape is enabled only when the config default says so OR the caller
+    # explicitly opted in for this compile (the UI checkbox). Off by default.
+    use_shell_escape = bool(ALLOW_SHELL_ESCAPE or shell_escape)
+    logger.info(f"[{session_id}] Compiling '{main_file}' with {engine} "
+                f"(shell-escape={use_shell_escape}).")
+    if shell_escape and not ALLOW_SHELL_ESCAPE:
+        logger.warning(f"[{session_id}] Shell-escape enabled for this compile by user request.")
     try:
         # Run the blocking compile OFF the event loop so other requests are not stalled.
-        result = await run_in_threadpool(compile_project, session_dir, main_file, engine)
+        result = await run_in_threadpool(
+            compile_project, session_dir, main_file, engine, COMPILE_TIMEOUT, use_shell_escape
+        )
     except Exception as e:
         logger.error(f"[{session_id}] Unexpected compilation error: {e}")
         raise HTTPException(status_code=500, detail=f"Internal compilation error: {e}")
@@ -295,7 +305,8 @@ async def compile_latex(
     if result.log_path:
         _last_log[session_id] = result.log_path
     response = result.to_dict()
-    response.update({"session_id": session_id, "main_file": main_file, "engine": engine})
+    response.update({"session_id": session_id, "main_file": main_file, "engine": engine,
+                     "shell_escape": use_shell_escape})
     if result.success and result.pdf_path:
         _last_pdf[session_id] = result.pdf_path
         response["pdf_url"] = f"/api/pdf/{session_id}"

@@ -3,6 +3,21 @@
 All notable changes to LaTeX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-07
+
+### Added
+- **Shell-escape checkbox** next to the Compile button. Packages like `minted`
+  need `\write18`, which is disabled by default for safety — previously the only
+  way to enable it was an environment variable before launch. It is now a
+  per-compile opt-in (remembered between visits, with a warning when switched
+  on); the safe default is unchanged. The API accepts a `shell_escape` form
+  field and reports the setting back in the compile response.
+- **Plain-language diagnostics** for three common failures, each with the exact
+  fix: a document that needs shell-escape (`minted`), a section title hyperref
+  cannot turn into a PDF bookmark (usually `\url{}` — it emits a raw `%` that
+  comments out the rest of the bookmark file), and Unicode characters pdflatex
+  cannot typeset (points at the xelatex/lualatex engine selector).
+
 ## [1.1.1] - 2026-07
 
 ### Changed

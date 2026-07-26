@@ -101,6 +101,28 @@ class TestLogParser:
         assert result.has_errors
         assert result.errors[0].file.startswith("c:/")
 
+    def test_shell_escape_hint(self):
+        """A minted failure must tell the user how to enable shell-escape."""
+        raw = ("chapter3.tex:114: Package minted Error: Cannot highlight code "
+               "(minted executable is unavailable or disabled).\n")
+        result = parse_log(raw)
+        assert any("Shell-escape" in e.message for e in result.errors)
+
+    def test_bookmark_hint(self):
+        """The \\@@BOOKMARK runaway must be explained in plain language."""
+        raw = ("Runaway argument?\n{\\376\\377\\000S\\000p\\ETC.\n"
+               "main.tex:208: File ended while scanning use of \\@@BOOKMARK.\n")
+        result = parse_log(raw)
+        assert any("bookmark" in e.message.lower() for e in result.errors)
+
+    def test_unicode_hint_suggests_engine_switch(self):
+        """Unicode-character errors should point at xelatex/lualatex."""
+        raw = ("main.tex:12: LaTeX Error: Unicode character \u03b8 (U+03B8)\n"
+               "               not set up for use with LaTeX.\n")
+        result = parse_log(raw)
+        hints = [e.message for e in result.errors if "xelatex" in e.message]
+        assert hints and "U+03B8" in hints[0]
+
     def test_no_false_bbl_warning(self):
         """Regression: a successful build that loads (./main.bbl) plus a benign
         'No file main.out.' line must NOT report a missing bibliography."""
@@ -254,6 +276,15 @@ class TestCompilerInternals:
         monkeypatch.setattr(compiler, "ALLOW_SHELL_ESCAPE", True)
         assert "-shell-escape" in compiler._engine_cmd("pdflatex", "main.tex")
         assert "-no-shell-escape" not in compiler._engine_cmd("pdflatex", "main.tex")
+
+    def test_shell_escape_per_compile_override(self):
+        """The UI checkbox enables shell-escape for one compile without
+        changing the (safe) global default."""
+        assert "-shell-escape" in _engine_cmd("pdflatex", "main.tex", True)
+        assert "-shell-escape" in _latexmk_cmd("main.tex", "pdflatex", True)
+        # explicit False still wins over anything else
+        assert "-no-shell-escape" in _engine_cmd("pdflatex", "main.tex", False)
+        assert "-no-shell-escape" in _latexmk_cmd("main.tex", "pdflatex", False)
 
     @pytest.mark.parametrize("engine,flag", [
         ("pdflatex", "-pdf"), ("xelatex", "-xelatex"), ("lualatex", "-lualatex"),
