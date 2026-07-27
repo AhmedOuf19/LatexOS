@@ -3,6 +3,34 @@
 All notable changes to LaTeX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **Automatic package installation now works on a fresh install.** A newly
+  installed TinyTeX ships a package manager (`tlmgr`) older than the online
+  repository, and TeX Live then refuses to install *anything* until it updates
+  itself. The result was a confusing `File 'x.sty' not found` on the first
+  document that needed any extra package — even though auto-install was on.
+  `install.bat` now updates the package manager as part of setup, and if the
+  situation is ever hit at compile time the app self-updates once and retries.
+  On Windows `tlmgr` reports this failure with exit code 0, so it is detected
+  from the message text rather than the status code.
+- `_safe_filename()` now splits on both `/` and `\` on every platform. On Linux,
+  `Path().name` does not treat `\` as a separator, so a Windows-style upload
+  name survived sanitising intact (this was also failing CI on Ubuntu).
+
+### Added
+- Contributor setup for safe outside contributions: `CONTRIBUTING.md` (including
+  the security invariants and the test that locks each one),
+  `CODE_OF_CONDUCT.md`, `CODEOWNERS`, issue/PR templates and Dependabot.
+- `tests/test_invariants.py` — 10 tripwires for security defaults that
+  previously had no test (loopback bind, trusted hosts, the `/api/compile`
+  shell-escape default, the extension deny-list, the ZIP member cap, and that no
+  workflow uses `pull_request_target` or a writable token).
+- CI hardening: least-privilege `permissions`, job timeouts, a concurrency
+  group, a pinned TinyTeX release, and `LATEX_STUDIO_REQUIRE_LATEX=1` in the
+  nightly job so the LaTeX-dependent security tests can never silently skip.
+
 ## [1.1.2] - 2026-07
 
 ### Added
