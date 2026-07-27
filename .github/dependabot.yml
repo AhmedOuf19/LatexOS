@@ -17,6 +17,14 @@ updates:
     labels: ["dependencies"]
     commit-message:
       prefix: "deps"
+    # Packages that must move together, or the install fails. pytest-asyncio
+    # 1.x requires pytest>=8.4, so bumping it alone makes pip unresolvable -
+    # grouping them means one PR that can actually pass CI.
+    groups:
+      pytest:
+        patterns:
+          - "pytest"
+          - "pytest-*"
 
   # The actions used by the CI workflow (keeps them patched, and updates the
   # pinned commit SHAs if they are pinned).
