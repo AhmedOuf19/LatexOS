@@ -3,7 +3,17 @@
 All notable changes to LaTeX Studio are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.2.0] - 2026-07-27
+
+First tagged release. Everything below is included.
+
+### Changed
+- Dependencies brought up to date: FastAPI 0.140.1, uvicorn 0.51.0,
+  python-multipart 0.0.32, aiofiles 25.1.0, pytest 9.1.1 with
+  pytest-asyncio 1.4.0. Verified end-to-end on the upgraded stack (this pulled
+  Starlette from 0.41 to 1.3, a major version).
+- `pytest` and `pytest-*` are grouped for Dependabot, because pytest-asyncio 1.x
+  requires pytest >= 8.4 and cannot be upgraded on its own.
 
 ### Fixed
 - **Automatic package installation now works on a fresh install.** A newly
