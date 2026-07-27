@@ -138,8 +138,13 @@ def _safe_filename(filename: str) -> str:
     Strips any directory part, replaces characters that are dangerous on
     Windows/POSIX, drops leading dots (so dotfiles like ``.latexmkrc`` cannot be
     created), and rejects reserved device names.
+
+    The final component is taken by splitting on BOTH separators explicitly,
+    never via ``Path(...).name``: on POSIX, pathlib does not treat ``\\`` as a
+    separator, so a Windows-style name like ``..\\..\\evil.tex`` would otherwise
+    survive sanitising completely intact.
     """
-    safe = Path(filename).name
+    safe = re.split(r"[\\/]+", filename)[-1]
     safe = re.sub(r'[<>:"|?*\x00-\x1f]', "_", safe)
     safe = safe.strip(". ")           # no leading/trailing dots or spaces
     if not safe:
