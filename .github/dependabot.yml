@@ -1,0 +1,30 @@
+# =============================================================================
+#  Dependabot - opens pull requests when a dependency has a newer (or a
+#  security-patched) version.
+#
+#  It only ever opens a PR; nothing is merged automatically, so every update
+#  still goes through CI and your review.
+# =============================================================================
+version: 2
+
+updates:
+  # Python dependencies in requirements.txt
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+
+  # The actions used by the CI workflow (keeps them patched, and updates the
+  # pinned commit SHAs if they are pinned).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "ci"

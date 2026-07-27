@@ -1,0 +1,10 @@
+# Removes the "blank issue" option so reports always use a template, and points
+# people at the right place for questions and security reports.
+blank_issues_enabled: false
+contact_links:
+  - name: Question / help using the app
+    url: https://github.com/AhmedOuf19/LatexOS/discussions
+    about: Ask here rather than opening an issue - beginner questions welcome.
+  - name: Report a security vulnerability (private)
+    url: https://github.com/AhmedOuf19/LatexOS/security/advisories/new
+    about: Please report security problems privately, never as a public issue.

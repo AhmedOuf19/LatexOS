@@ -1,0 +1,73 @@
+name: Bug report
+description: Something does not work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please **do not** report security problems here —
+        see [SECURITY.md](../blob/main/SECURITY.md) for private reporting.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+      placeholder: I clicked Compile and ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Upload ...
+        2. Click Compile
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Compile log
+      description: >
+        If it is a compile problem, paste the output from the log panel
+        (the "Copy" button copies the raw log). This is usually enough to find
+        the cause immediately.
+      render: text
+
+  - type: textarea
+    id: minimal-tex
+    attributes:
+      label: Smallest .tex that reproduces it
+      description: Optional, but by far the most helpful thing you can include.
+      render: latex
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the API docs page, or from `backend/__init__.py`.
+      placeholder: "1.1.2"
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      options: [pdflatex, xelatex, lualatex, "not sure"]
+
+  - type: input
+    id: os
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I ran `install.bat` and it completed
+        - label: I checked existing issues for a duplicate

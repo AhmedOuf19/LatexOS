@@ -17,7 +17,10 @@ Compiling a `.tex` file runs a real LaTeX engine, which is a powerful
 interpreter. Defaults are chosen to be safe:
 
 - **Shell-escape is OFF by default.** `\write18{…}` cannot run OS commands.
-  Enable it only for documents you trust, with `LATEX_ALLOW_SHELL_ESCAPE=1`.
+  Some packages (notably `minted`) need it: tick the **Shell-escape** box next to
+  the Compile button to enable it for that compile only, or set
+  `LATEX_ALLOW_SHELL_ESCAPE=1` to enable it for every compile. Only do this for
+  documents you trust — it lets the document run programs on your computer.
 - **File access is confined** to the project workspace (`openin_any=p`,
   `openout_any=p`), so a document cannot read your other files.
 - Uploads are size-capped and type-whitelisted; ZIPs are checked for

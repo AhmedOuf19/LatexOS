@@ -14,6 +14,8 @@ Two things every test in this suite relies on:
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from backend.compiler import check_latex_available
@@ -21,6 +23,13 @@ from backend.compiler import check_latex_available
 # Detected once per session. Individual engine tests re-check their own binary.
 _LATEX_STATUS = check_latex_available()
 LATEX_AVAILABLE = _LATEX_STATUS.get("pdflatex", {}).get("available", False)
+
+# Set to 1 in the nightly CI job. It turns "no LaTeX -> skip" into a hard error,
+# so a broken TeX install can never make the end-to-end security tests (notably
+# the live \write18 regression) silently vanish from a green run.
+REQUIRE_LATEX = os.getenv("LATEX_STUDIO_REQUIRE_LATEX", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 
 @pytest.fixture(autouse=True)
@@ -48,9 +57,22 @@ def client():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip @requires_latex tests when no LaTeX distribution is installed."""
+    """Skip @requires_latex tests when no LaTeX distribution is installed.
+
+    Unless ``LATEX_STUDIO_REQUIRE_LATEX=1`` is set (the nightly CI job does),
+    in which case a missing LaTeX install is a hard failure. Otherwise a broken
+    TinyTeX install would let the end-to-end ``\\write18`` security regression
+    quietly stop running while CI stayed green.
+    """
     if LATEX_AVAILABLE:
         return
+    if REQUIRE_LATEX:
+        raise pytest.UsageError(
+            "LATEX_STUDIO_REQUIRE_LATEX=1 but pdflatex was not found. The "
+            "@requires_latex security tests (including the live \\write18 "
+            "regression) would have been silently skipped. Fix the LaTeX "
+            "install in this job before trusting the result."
+        )
     skip = pytest.mark.skip(reason="no LaTeX distribution installed (pdflatex not found)")
     for item in items:
         if "requires_latex" in item.keywords:

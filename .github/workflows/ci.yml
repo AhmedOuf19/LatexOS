@@ -11,14 +11,29 @@ name: CI
 on:
   push:
     branches: [main, master]
+  # NOTE: 'pull_request' (not 'pull_request_target') is deliberate. It runs the
+  # PR's code WITHOUT access to repository secrets and with a read-only token,
+  # so an untrusted fork PR cannot exfiltrate anything or push to the repo.
   pull_request:
   schedule:
     - cron: "0 3 * * *"   # nightly full run at 03:00 UTC
+
+# Least privilege: the automatic GITHUB_TOKEN can only read the repo. Nothing in
+# CI needs to write, so nothing is allowed to.
+permissions:
+  contents: read
+
+# A new push to the same branch/PR cancels the previous, still-running job, so a
+# rapid series of commits cannot pile up runners.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # ── Fast: no LaTeX required ────────────────────────────────────────────────
   test:
     if: github.event_name != 'schedule'
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -39,23 +54,37 @@ jobs:
         run: pytest -v
 
   # ── Nightly: full run with a real LaTeX install ───────────────────────────
+  # Runs only on the nightly schedule, never on a pull request - so the remote
+  # install script below is only ever executed on trusted, maintainer-owned code.
   test-latex:
     if: github.event_name == 'schedule'
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install TinyTeX
+      # Pinned to a specific TinyTeX release rather than a floating installer
+      # script, so what CI executes only changes in a reviewed commit.
+      - name: Install TinyTeX (pinned release)
+        env:
+          TINYTEX_TAG: v2026.07
         run: |
-          wget -qO- "https://yihui.org/tinytex/install-bin-unix.sh" | sh
-          echo "$HOME/.TinyTeX/bin/x86_64-linux" >> "$GITHUB_PATH"
+          set -euo pipefail
+          url="https://github.com/rstudio/tinytex-releases/releases/download/${TINYTEX_TAG}/TinyTeX-1-${TINYTEX_TAG}.tar.gz"
+          curl -fsSL --retry 3 -o tinytex.tar.gz "$url"
+          mkdir -p "$HOME/tinytex" && tar -xzf tinytex.tar.gz -C "$HOME/tinytex" --strip-components=1
+          echo "$HOME/tinytex/bin/x86_64-linux" >> "$GITHUB_PATH"
       - name: Install extra LaTeX packages used by fixtures
         run: tlmgr install latexmk biber biblatex
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      # LATEX_STUDIO_REQUIRE_LATEX=1 makes a missing LaTeX install a hard error
+      # instead of silently skipping the end-to-end \write18 security test.
       - name: Run the full suite (including compilation)
+        env:
+          LATEX_STUDIO_REQUIRE_LATEX: "1"
         run: pytest -v

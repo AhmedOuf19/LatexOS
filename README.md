@@ -184,6 +184,21 @@ other web origins.
 
 ---
 
+## Contributing
+
+Contributions are welcome — bug reports, fixes and features alike.
+
+Start with **[CONTRIBUTING.md](CONTRIBUTING.md)**. It covers the dev setup, how
+to run the tests, and the **security invariants** the project relies on (things
+like shell-escape staying off by default and the path-traversal guards). Each
+invariant is locked by a test, so you will know immediately if a change touches
+one.
+
+Please also read the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security
+problem? Report it privately — see [SECURITY.md](SECURITY.md), not a public issue.
+
+---
+
 ## License
 
 [MIT](LICENSE). Bundled/downloaded components (Monaco, the fonts, the LaTeX

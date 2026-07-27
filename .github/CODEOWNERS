@@ -1,0 +1,39 @@
+# =============================================================================
+#  CODEOWNERS - who must review what.
+#
+#  With "Require review from Code Owners" enabled on the main branch (see
+#  Settings > Rules > Rulesets), any pull request touching these paths cannot be
+#  merged without @AhmedOuf19's approval. This is the safety net that stops a
+#  well-meaning PR from quietly weakening a security default.
+# =============================================================================
+
+# Everything, by default.
+*                           @AhmedOuf19
+
+# --- Security-critical: never merge these without a careful read -------------
+
+# Shell-escape policy, sandbox environment (openin_any/openout_any), subprocess
+# handling and the on-demand package installer.
+/backend/compiler.py        @AhmedOuf19
+
+# Origin/token middleware, route confinement, upload size limits.
+/backend/main.py            @AhmedOuf19
+
+# Path-traversal guards, ZIP extraction (zip-slip / zip-bomb / dotfiles).
+/backend/file_manager.py    @AhmedOuf19
+
+# Security defaults and resource caps.
+/backend/config.py          @AhmedOuf19
+
+# The tests that lock all of the above. A PR that edits these is either fixing
+# a real bug or disabling a guard - always check which.
+/tests/                     @AhmedOuf19
+
+# --- Supply chain: these download and execute code ---------------------------
+/scripts/                   @AhmedOuf19
+/install.bat                @AhmedOuf19
+/update.bat                 @AhmedOuf19
+/requirements.txt           @AhmedOuf19
+
+# --- CI and repository configuration -----------------------------------------
+/.github/                   @AhmedOuf19
