@@ -321,6 +321,36 @@ class TestCompilerInternals:
         assert "chapter1.tex" not in got   # user \input, not a package
         assert "logo.png" not in got       # user asset, not a package
 
+    def test_detects_tlmgr_needs_self_update(self):
+        """Regression: a freshly-installed TinyTeX ships a tlmgr older than the
+        remote repository and refuses to install anything until it self-updates.
+
+        On Windows tlmgr is a .bat wrapper that exits 0 even on this failure, so
+        the condition MUST be detected from the output text. Without this, the
+        first compile needing any package failed with a confusing
+        "File `x.sty' not found" on every fresh install.
+        """
+        from backend.compiler import _RE_TLMGR_NEEDS_SELF_UPDATE
+
+        real_output = (
+            "===============================================================\n"
+            "tlmgr itself needs to be updated.\n"
+            "Please do this via either\n"
+            "  tlmgr update --self\n"
+            "tlmgr.pl: Terminating; please see warning above!\n"
+        )
+        assert _RE_TLMGR_NEEDS_SELF_UPDATE.search(real_output)
+        # The other phrasing TeX Live uses for the same condition.
+        assert _RE_TLMGR_NEEDS_SELF_UPDATE.search(
+            "local TeX Live (2025) is older than remote repository (2026)"
+        )
+        # And it must not fire on an ordinary successful install.
+        assert not _RE_TLMGR_NEEDS_SELF_UPDATE.search(
+            "tlmgr: package repository https://tlnet.yihui.org (verified)\n"
+            "[1/1, ??:??/??:??] install: listingsutf8 [1k]\n"
+            "tlmgr: package log updated"
+        )
+
     def test_resolve_binary_finds_bat(self, tmp_path, monkeypatch):
         """Regression: TinyTeX ships tlmgr as tlmgr.bat; the resolver must find
         .bat/.cmd scripts, not only .exe."""

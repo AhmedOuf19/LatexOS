@@ -368,6 +368,38 @@ def _uses_biblatex(workspace: Path) -> bool:
 # back via _Deadline.extend, so the final recompile keeps its full budget).
 _TLMGR_SEARCH_TIMEOUT = 45
 _TLMGR_INSTALL_TIMEOUT = 180
+_TLMGR_SELF_UPDATE_TIMEOUT = 300
+
+# TeX Live refuses to install ANY package while tlmgr itself is older than the
+# remote repository ("tlmgr itself needs to be updated ... Terminating"). A
+# freshly-installed TinyTeX hits this on its very first on-demand install, and
+# because tlmgr ships as a .bat wrapper on Windows the failure is reported with
+# exit code 0 - so it must be detected from the output text, not the status.
+_RE_TLMGR_NEEDS_SELF_UPDATE = re.compile(
+    r"tlmgr itself needs to be updated"
+    r"|local TeX Live \(\d+\) is older than remote repository",
+    re.IGNORECASE,
+)
+
+# tlmgr self-update is attempted at most once per server process.
+_tlmgr_self_updated = False
+
+
+def _tlmgr_self_update(tlmgr: str, env: dict) -> bool:
+    """Run ``tlmgr update --self``. Returns True if it appears to have worked.
+
+    Only ever runs once per process: it is slow, and if it fails once it will
+    keep failing (no network, read-only install, …).
+    """
+    global _tlmgr_self_updated
+    if _tlmgr_self_updated:
+        return False
+    _tlmgr_self_updated = True
+    try:
+        _run([tlmgr, "update", "--self"], Path.cwd(), _TLMGR_SELF_UPDATE_TIMEOUT, env)
+        return True
+    except (TimeoutError, OSError):
+        return False
 
 
 def _tool_env() -> dict:
@@ -441,10 +473,30 @@ def _install_missing_packages(
             )
             continue
         try:
-            _run([tlmgr, "install", pkg], Path.cwd(), _TLMGR_INSTALL_TIMEOUT, env)
+            _rc, out, err = _run(
+                [tlmgr, "install", pkg], Path.cwd(), _TLMGR_INSTALL_TIMEOUT, env
+            )
         except (TimeoutError, OSError):
             failures.append(f"Installing package '{pkg}' for '{fname}' timed out.")
             continue
+
+        # A fresh TeX Live/TinyTeX refuses to install until tlmgr updates itself.
+        # Detect that from the OUTPUT (the .bat wrapper always exits 0), run the
+        # self-update once, then retry this package.
+        if _RE_TLMGR_NEEDS_SELF_UPDATE.search(out + err):
+            if _tlmgr_self_update(tlmgr, env):
+                try:
+                    _run([tlmgr, "install", pkg], Path.cwd(), _TLMGR_INSTALL_TIMEOUT, env)
+                except (TimeoutError, OSError):
+                    failures.append(f"Installing package '{pkg}' timed out after self-update.")
+                    continue
+            else:
+                failures.append(
+                    f"'{fname}' is missing and the package manager could not update "
+                    f"itself to install it. Run update.bat, then compile again."
+                )
+                continue
+
         # tlmgr.bat's exit code is unreliable; confirm the file now resolves.
         if _kpsewhich_finds(fname, env):
             installed_any = True

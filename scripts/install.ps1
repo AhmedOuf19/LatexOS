@@ -116,8 +116,16 @@ if (Test-Path $tinytexBin) {
     }
     if (Test-Path $tinytexBin) {
         Write-Ok 'TinyTeX installed'
-        # Ask tlmgr to install missing packages on demand.
-        & (Join-Path $ProjectRoot 'tinytex\bin\windows\tlmgr.bat') option autobackup 0 2>$null | Out-Null
+        $tlmgr = Join-Path $ProjectRoot 'tinytex\bin\windows\tlmgr.bat'
+        & $tlmgr option autobackup 0 2>$null | Out-Null
+        # A freshly-extracted TinyTeX ships a tlmgr older than the remote CTAN
+        # repository, and TeX Live then REFUSES to install any package
+        # ("tlmgr itself needs to be updated ... Terminating"). Updating it here
+        # means on-demand package installation works from the very first compile
+        # instead of failing with a confusing "File `x.sty' not found".
+        Write-Log 'Updating the LaTeX package manager (needed before any package can be installed)...'
+        & $tlmgr update --self 2>&1 | Out-Null
+        Write-Ok 'LaTeX package manager up to date'
     } else {
         Write-Warn 'TinyTeX not installed. The app will look for a system MiKTeX/TeX Live instead.'
         Write-Warn 'If you have neither, install one from https://miktex.org or https://yihui.org/tinytex/'
