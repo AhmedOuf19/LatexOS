@@ -1,4 +1,38 @@
 <!DOCTYPE html>
+<!--
+  index.html – the whole LaTeX Studio UI. No framework, no build step, no
+  router: this single page IS the app, and frontend/app.js drives it.
+
+  It is meant to be loaded from the running server (serve_frontend in
+  backend/main.py), not opened from disk, for two reasons: the backend has to
+  substitute __STUDIO_TOKEN__ below before sending the page, and every asset
+  path here is absolute (/static/…), which only resolves through the server's
+  StaticFiles mount.
+
+  LAYOUT – three panels side by side, in DOM order:
+    LEFT    upload drop zone → file tree → main-file picker → Compile button
+    CENTER  Monaco code editor (or an image preview for non-text files)
+    RIGHT   PDF preview, with the filterable compile log stacked beneath it
+
+  Two conventions to know before editing:
+
+  * Element ids are the contract with app.js, which resolves all of them by id
+    at load time. tests/check_frontend_ids.py fails if app.js names an id that
+    is absent here – that exact defect (a missing #openNewTabBtn) once aborted
+    initialization and left the page dead. So rename an id in both files or in
+    neither. That checker matches ids with an id="…" regex, so keep ids in
+    double quotes.
+
+  * Nothing may reference an external host. The app has to work on a machine
+    with no internet, so fonts, styles and the Monaco editor are all vendored
+    under /static; tests/test_frontend.py greps this file for stray http(s)
+    URLs and fails on any that are not the SVG xmlns namespace.
+
+  Alternative states of a panel (empty / busy / result) are not created on
+  demand: they all sit in the markup below carrying the `hidden` class
+  (`display:none !important`, style.css) and app.js swaps which one is visible.
+  Only genuine lists – file rows, log entries, toasts – are built at runtime.
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -7,8 +41,16 @@
   <meta name="description" content="Upload your LaTeX project files and compile them to a beautiful PDF instantly. Supports .tex, .bib, images, custom classes and more." />
   <meta name="keywords" content="LaTeX, PDF, compiler, Overleaf, online LaTeX editor, pdflatex" />
 
-  <!-- Per-instance security token, injected by the backend when it serves this
-       page. The frontend echoes it back on every API call (see app.js). -->
+  <!-- Per-instance security token. `__STUDIO_TOKEN__` is a literal placeholder
+       and must stay in the file on disk (tests/test_frontend.py asserts it):
+       the backend reads this file, string-replaces the placeholder with the
+       token it generated for this run, and sends the result – so the token only
+       ever reaches a page loaded over the same origin. app.js reads it back out
+       of this meta tag and sends it as an X-Studio-Token header on every /api/
+       call; the backend middleware rejects a request whose token is present but
+       does not match. The token has to live here rather than in app.js because
+       index.html is the only file the backend rewrites – app.js is served
+       verbatim from the /static mount. -->
   <meta name="studio-token" content="__STUDIO_TOKEN__" />
 
   <!-- Fonts are self-hosted (see @font-face in style.css) so the app works
@@ -35,6 +77,9 @@
       </div>
     </div>
 
+    <!-- Live LaTeX-installation indicator. The wording here is only what the
+         user sees for the moment before /api/status answers; checkLatexStatus()
+         in app.js overwrites both the dot's class and this text. -->
     <div class="header-center">
       <div id="headerStatus" class="header-status" aria-live="polite">
         <span class="status-dot" id="statusDot"></span>
@@ -45,6 +90,10 @@
     <div class="header-right">
       <div class="engine-selector">
         <label for="engineSelect" class="sr-only">LaTeX Engine</label>
+        <!-- These option values are POSTed verbatim as the `engine` form field,
+             so they must stay spelled exactly like the EngineType literal in
+             backend/config.py – /api/compile rejects anything outside that set
+             with a 400, so a typo here breaks compiling entirely. -->
         <select id="engineSelect" class="engine-select" title="Select LaTeX engine">
           <option value="pdflatex">pdflatex</option>
           <option value="xelatex">xelatex</option>
@@ -64,13 +113,16 @@
     <!-- ─────────────── LEFT PANEL: Upload + File Tree ─────────────────── -->
     <aside class="panel panel-left" id="leftPanel" aria-label="File manager">
 
-      <!-- Upload Zone -->
+      <!-- ··· Upload zone ··············································· -->
       <section class="upload-section" aria-labelledby="uploadHeading">
         <h2 id="uploadHeading" class="panel-heading">
           <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
           Upload Files
         </h2>
 
+        <!-- A <div> is not focusable or announced as clickable on its own, so
+             role/tabindex are what let keyboard and screen-reader users open the
+             file picker; app.js binds Enter/Space alongside the click handler. -->
         <div
           id="dropZone"
           class="drop-zone"
@@ -89,10 +141,17 @@
             <p class="drop-label">Drop files here or <span class="drop-link">browse</span></p>
             <p class="drop-hint" id="dropZoneHint">Supports .tex, .bib, .cls, images, or a .zip of your whole project</p>
           </div>
+          <!-- The real file picker, visually hidden and clicked on the user's
+               behalf by the drop zone above. `accept` is a convenience filter
+               only: it is a common-case subset of the backend's
+               ALLOWED_EXTENSIONS, browsers let users override it, and dragging
+               files in bypasses it entirely – file_manager.py is the gate that
+               actually rejects a disallowed type. -->
           <input type="file" id="fileInput" multiple accept=".tex,.bib,.bst,.cls,.sty,.png,.jpg,.jpeg,.pdf,.eps,.svg,.ttf,.otf,.zip,.csv,.txt,.dat" class="file-input-hidden" aria-hidden="true" />
         </div>
 
-        <!-- Upload Progress -->
+        <!-- Upload progress – hidden until an upload starts; progressFill's
+             width is set as an inline style by app.js. -->
         <div id="uploadProgress" class="upload-progress hidden" role="status" aria-label="Upload progress">
           <div class="progress-bar-track">
             <div class="progress-bar-fill" id="progressFill"></div>
@@ -101,7 +160,7 @@
         </div>
       </section>
 
-      <!-- File Tree -->
+      <!-- ··· File tree ················································ -->
       <section class="file-tree-section" aria-labelledby="filesHeading">
         <div class="section-header">
           <h2 id="filesHeading" class="panel-heading">
@@ -113,23 +172,38 @@
           </button>
         </div>
 
+        <!-- app.js appends one .file-item row per uploaded file here. The empty
+             placeholder is a permanent child that is only hidden, never removed
+             – re-rendering the tree deletes just the .file-item nodes, so the
+             placeholder is always there to show again when the tree empties. -->
         <div id="fileTree" class="file-tree" role="list" aria-label="Uploaded project files">
           <div class="file-tree-empty" id="fileTreeEmpty">
             <p>No files uploaded yet.</p>
           </div>
         </div>
 
-        <!-- Main File Selector -->
+        <!-- Which .tex is the document root. Empty until an upload happens:
+             app.js fills it with the project's .tex files and preselects the
+             backend's `detected_main` guess, then unhides it. The chosen value
+             is sent as `main_file`, and the backend re-checks that it really is
+             one of that session's .tex files – this dropdown is a convenience,
+             never a trust boundary. -->
         <div id="mainFileSelector" class="main-file-selector hidden">
           <label for="mainFileSelect" class="selector-label">Main .tex file:</label>
           <select id="mainFileSelect" class="engine-select" aria-label="Select main .tex file"></select>
         </div>
       </section>
 
-      <!-- Compile Button -->
+      <!-- ··· Compile action ··········································· -->
+      <!-- compileBtn starts disabled on purpose – there is nothing to compile
+           yet. app.js enables it whenever the file tree renders with a session
+           behind it, which covers both a fresh upload and a session restored
+           from localStorage after a page refresh. -->
       <div class="compile-actions">
         <!-- Shell-escape opt-in. OFF by default: it lets a document run programs
-             on this computer, but packages like minted require it. -->
+             on this computer, but packages like minted require it. The checkbox
+             is per-compile – its value rides along with each /api/compile call
+             rather than being a server setting, so the risk window is one run. -->
         <label class="shell-escape-toggle" for="shellEscapeCheck"
                title="Required by minted, svg and gnuplot. Only enable for documents you trust — it lets the document run programs on your computer.">
           <input type="checkbox" id="shellEscapeCheck" />
@@ -155,6 +229,12 @@
           <span id="editorFileTitle">No file selected</span>
         </h2>
       </div>
+      <!-- Three mutually exclusive views of the selected file; app.js shows one
+           and hides the other two. Monaco (or the textarea fallback) is mounted
+           into monacoContainer, so this element must exist before app.js runs.
+           min-height:0 is required: a flex child defaults to min-height:auto and
+           would refuse to shrink below the editor's content height, pushing the
+           panel past the bottom of the window instead of scrolling inside. -->
       <div id="monacoContainer" class="editor-container" style="flex: 1; min-height: 0;"></div>
       <div id="imageViewer" class="image-viewer hidden">
         <img id="imageViewerImg" src="" alt="Preview" />
@@ -171,6 +251,9 @@
           <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16" aria-hidden="true"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
           PDF Preview
         </h2>
+        <!-- Download and open-in-new-tab start hidden and are revealed only once
+             a compile has produced a PDF – an action that 404s is worse than no
+             action. Toggle Log is always available. -->
         <div class="toolbar-actions">
           <button id="toggleLogBtn" class="filter-btn" title="Show/Hide Log">Toggle Log</button>
           <button id="openNewTabBtn" class="toolbar-btn hidden" aria-label="Open PDF in a new tab" title="Open PDF in a new tab">
@@ -182,6 +265,12 @@
         </div>
       </div>
 
+      <!-- ··· PDF viewport ············································· -->
+      <!-- Three stacked states – idle, compiling, result – all present in the
+           markup and swapped by toggling `hidden`. The PDF is shown in an
+           <iframe> so the browser's own PDF viewer does the rendering; nothing
+           is bundled for that. Its src is set to the session's pdf_url after a
+           successful compile and cleared when the session is cleared. -->
       <div class="pdf-viewport" id="pdfViewport">
         <div class="pdf-empty-state" id="pdfEmptyState">
           <h3 class="empty-state-title">Ready to compile</h3>
@@ -196,9 +285,17 @@
         <iframe id="pdfFrame" class="pdf-frame hidden" title="Compiled PDF preview"></iframe>
       </div>
 
-      <!-- Log Section (Stacked below PDF) -->
+      <!-- ··· Compile log (stacked below the PDF) ······················· -->
+      <!-- Hidden until the user hits "Toggle Log". Populated from the backend's
+           parsed log: logContainer gets one entry per error/warning, and
+           rawLogPre holds the unparsed .log for when the parser missed
+           something. -->
       <div id="logSection" class="log-section hidden">
         <div class="panel-toolbar log-toolbar">
+          <!-- app.js matches each button's data-filter against the `level` of
+               every parsed log entry, so these values must stay spelled like the
+               levels the backend emits ("error", "warning"); "all" is the
+               special case that shows everything. -->
           <div class="log-filters">
             <button class="filter-btn active" data-filter="all" id="filterAll">All</button>
             <button class="filter-btn" data-filter="error" id="filterErrors">Err <span class="badge badge-error" id="errorCount">0</span></button>
@@ -212,6 +309,9 @@
         </div>
         <div id="logContainer" class="log-container">
           <div class="log-empty" id="logEmpty"><p>No log yet.</p></div>
+          <!-- Escape hatch for the cases log_parser.py cannot classify: the
+               untouched .log, collapsed by default so it does not bury the
+               parsed entries. -->
           <details id="rawLogDetails" class="raw-log-details hidden" style="margin-top: 10px;">
             <summary>Raw Log Output</summary>
             <pre id="rawLogPre" style="font-size: 11px; white-space: pre-wrap; word-wrap: break-word; color: var(--text-secondary);"></pre>
@@ -223,6 +323,9 @@
   </main>
 
   <!-- ═══════════════════════════ TOAST SYSTEM ══════════════════════════════ -->
+  <!-- Transient notifications; app.js appends and removes children here.
+       aria-live="assertive" because toasts report upload/compile failures that a
+       screen-reader user should hear now, not after the current announcement. -->
   <div id="toastContainer" class="toast-container" aria-live="assertive" aria-atomic="true"></div>
 
   <!-- ═══════════════════════════ STATUS BAR ═══════════════════════════════ -->
@@ -237,16 +340,29 @@
     </div>
   </footer>
 
+  <!-- ═════════════════════════════ SCRIPTS ════════════════════════════════ -->
+
   <!-- Monaco Editor is vendored locally (frontend/vendor/monaco) by install so
-       the app needs no internet. If the loader is missing, app.js falls back to
-       a plain <textarea> editor rather than failing. -->
+       the app needs no internet. That vendoring is optional, though, so this
+       script tag may 404 – hence the onerror flag: it fires when loader.js
+       cannot be fetched, and initEditor() in app.js checks window.__monacoMissing
+       and builds a plain <textarea> editor instead of leaving the user with a
+       blank pane. Editing keeps working; only syntax highlighting is lost.
+       (onerror is an inline attribute rather than a listener because the script
+       can fail before any of our own JS has had a chance to run.) -->
   <script src="/static/vendor/monaco/vs/loader.js" onerror="window.__monacoMissing=true"></script>
   <script>
+    // Point Monaco's AMD loader at the vendored copy; without this it resolves
+    // module paths against a CDN, which would break offline use. Guarded because
+    // `require` only exists if the tag above actually loaded.
     if (window.require) {
       require.config({ paths: { 'vs': '/static/vendor/monaco/vs' } });
     }
   </script>
 
+  <!-- Last, and deliberately without `defer`: app.js calls init() at the top
+       level and resolves every element by id immediately, so the markup above
+       must already be parsed. -->
   <script src="/static/app.js"></script>
 </body>
 </html>

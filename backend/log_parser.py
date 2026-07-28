@@ -4,7 +4,8 @@ log_parser.py – Structured LaTeX log parser.
 Turns the raw ``.log`` produced by pdflatex/xelatex/lualatex into structured
 errors, warnings and over/underfull-box entries for the UI.
 
-Two subtleties that a naive parser gets wrong and this one handles:
+A TeX log is a stream of loosely formatted prose, not a machine-readable
+format. Four of its habits break a naive parser; this module handles all four:
 
 * **``-file-line-error`` format.** The compiler passes ``-file-line-error``, so
   the most common errors appear as ``main.tex:12: Undefined control sequence.``
@@ -13,6 +14,22 @@ Two subtleties that a naive parser gets wrong and this one handles:
 * **Package-warning continuations.** Package warnings continue on lines that
   begin with ``(packagename)`` rather than a space, so those continuation lines
   are collected too.
+* **79-column hard wrapping.** TeX flushes its log every ``max_print_line``
+  characters (79 by default), so one logical message can arrive split across
+  several physical lines, often mid-word. ``_unwrap`` stitches those back
+  together *before* any matching happens; otherwise a regex silently fails on a
+  message that happened to be long.
+* **Errors rarely name their own file.** A ``! …`` error says what went wrong
+  but not where. TeX marks file boundaries only by printing ``(path`` when it
+  opens a file and ``)`` when it closes it, so the parser mirrors that with a
+  file stack and blames the innermost open file. Without it every error in an
+  ``\\input`` chapter would be attributed to the main document.
+
+Layout: one forward pass over the lines classifies errors / warnings / boxes,
+then a set of ``_detect_*`` helpers re-scan the whole raw log for well-known
+failure modes (missing package, shell-escape needed, hyperref bookmarks,
+non-typesettable Unicode). Those hints exist because TeX's own wording is
+accurate but unusable for a non-LaTeX author, who is this app's target user.
 """
 
 from __future__ import annotations
@@ -22,17 +39,33 @@ from dataclasses import dataclass, field
 from typing import List
 
 
+# ─── Data model ───────────────────────────────────────────────────────────────
+
 @dataclass
 class LogEntry:
-    level: str          # "error" | "warning" | "info" | "badbox"
+    """One problem found in the log, in the shape the log panel renders.
+
+    Some entries are lifted straight out of the log, others are hints this
+    module writes itself (see the ``_detect_*`` helpers); the UI treats both
+    identically, which is why a synthesised hint simply leaves ``file``/``line``
+    empty rather than inventing a location.
+    """
+    level: str          # "error" | "warning" | "info" | "badbox"; app.js uses it
+                        # verbatim as a CSS class and as the filter value
     message: str
-    file: str = ""
+    file: str = ""      # "" when the log never told us which file (see file stack)
     line: int | None = None
     context: str = ""   # surrounding lines, shown collapsed in the UI
 
 
 @dataclass
 class ParsedLog:
+    """A whole compile log bucketed by severity, plus the untouched original.
+
+    ``raw`` is carried along deliberately: this parser is best-effort on a
+    format that has no specification, so the UI must still be able to show the
+    user what TeX actually said when a failure is not recognised here.
+    """
     errors: List[LogEntry] = field(default_factory=list)
     warnings: List[LogEntry] = field(default_factory=list)
     badboxes: List[LogEntry] = field(default_factory=list)
@@ -41,9 +74,21 @@ class ParsedLog:
 
     @property
     def has_errors(self) -> bool:
+        """True if anything was classified as an error.
+
+        Warnings and bad boxes deliberately do not count — an overfull ``\\hbox``
+        is ugly but still produces a perfectly usable PDF, and flagging it as a
+        failure would train users to ignore the error indicator.
+        """
         return len(self.errors) > 0
 
     def to_dict(self) -> dict:
+        """Return the JSON payload the frontend consumes.
+
+        The key names below are the API contract: ``app.js`` reads them by name
+        and ``tests/test_api.py`` asserts they exist, so renaming one breaks the
+        log panel without any error being raised.
+        """
         return {
             "has_errors": self.has_errors,
             "errors": [_entry_to_dict(e) for e in self.errors],
@@ -54,10 +99,16 @@ class ParsedLog:
         }
 
 
-def _entry_to_dict(e: LogEntry) -> dict:
+def _entry_to_dict(entry: LogEntry) -> dict:
+    """Return ``entry`` as a plain JSON-serialisable dict.
+
+    Spelled out by hand instead of ``dataclasses.asdict`` so the wire format
+    stays pinned to exactly these five keys: a field added to :class:`LogEntry`
+    for internal bookkeeping must not silently start leaking to the browser.
+    """
     return {
-        "level": e.level, "message": e.message,
-        "file": e.file, "line": e.line, "context": e.context,
+        "level": entry.level, "message": entry.message,
+        "file": entry.file, "line": entry.line, "context": entry.context,
     }
 
 
@@ -100,7 +151,13 @@ def _starts_warning(line: str) -> bool:
 # ─── Main Parser ──────────────────────────────────────────────────────────────
 
 def parse_log(raw_log: str) -> ParsedLog:
-    """Parse raw ``.log`` text into a :class:`ParsedLog`."""
+    """Parse raw ``.log`` text into a :class:`ParsedLog`.
+
+    The scan is index-driven rather than a ``for`` loop because an error or a
+    warning owns the lines that follow it — its context dump or its wrapped
+    continuation — and those lines must be *consumed*, not classified again as
+    problems of their own.
+    """
     result = ParsedLog(raw=raw_log)
     lines = _unwrap(raw_log.splitlines())
 
@@ -108,84 +165,97 @@ def parse_log(raw_log: str) -> ParsedLog:
     # is attributed to the most-recently-opened file rather than a guess.
     file_stack: List[str] = []
 
-    i = 0
-    n = len(lines)
-    while i < n:
-        line = lines[i]
+    index = 0
+    total_lines = len(lines)
+    while index < total_lines:
+        line = lines[index]
 
-        # Keep the current-file stack roughly in sync with the log.
+        # Keep the current-file stack roughly in sync with the log. This has to
+        # happen before the branches below, because TeX packs file openings and
+        # message text onto the same line ("(./ch1.tex Overfull \hbox …").
         _update_file_stack(line, file_stack)
         current_file = file_stack[-1] if file_stack else ""
 
         # ── file:line: error  (the -file-line-error format) ──────────────────
-        fl = _RE_FILELINE_ERROR.match(line)
-        if fl and _looks_like_error(fl.group(3)):
+        fileline_match = _RE_FILELINE_ERROR.match(line)
+        if fileline_match and _looks_like_error(fileline_match.group(3)):
             result.errors.append(LogEntry(
                 level="error",
-                message=fl.group(3).strip(),
-                file=fl.group(1).strip(),
-                line=int(fl.group(2)),
-                context="\n".join(lines[i + 1:i + 4]),
+                message=fileline_match.group(3).strip(),
+                file=fileline_match.group(1).strip(),
+                line=int(fileline_match.group(2)),
+                context="\n".join(lines[index + 1:index + 4]),
             ))
-            i += 1
+            index += 1
             continue
 
         # ── "! …" hard error ─────────────────────────────────────────────────
-        bang = _RE_BANG_ERROR.match(line)
-        if bang and not line.startswith("!  =="):
-            message = bang.group(1).strip()
+        bang_match = _RE_BANG_ERROR.match(line)
+        # "!  ==> Fatal error occurred, no output PDF file produced!" is TeX's
+        # closing summary of an error already reported above, not a new problem.
+        if bang_match and not line.startswith("!  =="):
+            message = bang_match.group(1).strip()
             context_lines: List[str] = []
             line_num: int | None = None
-            j = i + 1
-            while j < n and j < i + 12:
-                ln = _RE_LINE_NUM.match(lines[j])
-                if ln:
-                    line_num = int(ln.group(1))
-                    context_lines.append(lines[j])
-                    j += 1
-                    break
-                context_lines.append(lines[j])
-                j += 1
+            lookahead = index + 1
+            # The source line ("l.42 \badcommand") follows the message a few
+            # lines later. Cap the window at 12 lines so a runaway argument —
+            # whose dump can run for hundreds of lines — cannot swallow the
+            # next error.
+            while lookahead < total_lines and lookahead < index + 12:
+                line_num_match = _RE_LINE_NUM.match(lines[lookahead])
+                if line_num_match:
+                    line_num = int(line_num_match.group(1))
+                    context_lines.append(lines[lookahead])
+                    lookahead += 1
+                    break               # "l.NN" is the last line of this error
+                context_lines.append(lines[lookahead])
+                lookahead += 1
             result.errors.append(LogEntry(
                 level="error", message=message, file=current_file,
                 line=line_num, context="\n".join(context_lines[:5]),
             ))
-            i = j
+            index = lookahead           # skip the lines consumed as context
             continue
 
         # ── LaTeX / Package / Class / Font warning ───────────────────────────
         if _starts_warning(line):
             warning_lines = [line]
-            j = i + 1
+            lookahead = index + 1
             # Continuations either start with a space (LaTeX) or with the
             # "(packagename)" marker (package warnings).
-            while j < n and (
-                lines[j].startswith(" ")
-                or re.match(r"^\(\w[\w.-]*\)\s", lines[j])
+            while lookahead < total_lines and (
+                lines[lookahead].startswith(" ")
+                or re.match(r"^\(\w[\w.-]*\)\s", lines[lookahead])
             ):
-                warning_lines.append(lines[j].strip())
-                j += 1
-            full = " ".join(warning_lines).strip()
-            ln_search = re.search(r"on input line (\d+)", full)
+                warning_lines.append(lines[lookahead].strip())
+                lookahead += 1
+            full_message = " ".join(warning_lines).strip()
+            # Search the joined text, not the first line: the 79-column wrap
+            # regularly pushes "on input line NN" onto a continuation line.
+            input_line_match = re.search(r"on input line (\d+)", full_message)
             result.warnings.append(LogEntry(
-                level="warning", message=full, file=current_file,
-                line=int(ln_search.group(1)) if ln_search else None,
+                level="warning", message=full_message, file=current_file,
+                line=int(input_line_match.group(1)) if input_line_match else None,
             ))
-            i = j
+            index = lookahead
             continue
 
         # ── Overfull / Underfull box ─────────────────────────────────────────
-        bb = _RE_BADBOX.match(line)
-        if bb:
+        badbox_match = _RE_BADBOX.match(line)
+        if badbox_match:
             result.badboxes.append(LogEntry(
                 level="badbox", message=line.strip(),
-                line=int(bb.group(3)), file=current_file,
+                line=int(badbox_match.group(3)), file=current_file,
             ))
-            i += 1
+            index += 1
             continue
 
-        i += 1
+        index += 1
 
+    # Whole-log passes: these spot failure modes the line scan cannot see and
+    # append plain-English advice. _dedupe runs last so it also collapses
+    # duplicates they produce (the same missing package reported once per pass).
     _detect_missing_packages(raw_log, result)
     _detect_bibliography_issues(raw_log, result)
     _detect_shell_escape_needed(raw_log, result)
@@ -194,6 +264,8 @@ def parse_log(raw_log: str) -> ParsedLog:
     _dedupe(result)
     return result
 
+
+# ─── Line-level helpers ───────────────────────────────────────────────────────
 
 def _starts_new_record(line: str) -> bool:
     """True if ``line`` begins a new log record and so must NOT be merged onto
@@ -252,24 +324,44 @@ def _looks_like_error(message: str) -> bool:
 
 
 def _update_file_stack(line: str, stack: List[str]) -> None:
-    """Push newly-opened files and pop closed ones to track the current file."""
+    """Push newly-opened files and pop closed ones to track the current file.
+
+    TeX announces the file it is reading as ``(path`` and its end as ``)``,
+    several of them per line and interleaved with ordinary message text — this
+    is the only location information most errors ever get. Scanning character by
+    character (rather than one regex per line) is what lets nested opens and
+    closes on the same line be applied in order.
+
+    Attribution is best-effort by nature: parentheses inside messages and file
+    names unbalance the stack, so a wrong ``file`` on an entry is cosmetic and
+    must never be used for a correctness decision.
+    """
     idx = 0
     while idx < len(line):
         ch = line[idx]
         if ch == "(":
-            m = _RE_FILE_OPEN.match(line, idx)
-            if m:
-                stack.append(m.group(1))
+            open_match = _RE_FILE_OPEN.match(line, idx)
+            if open_match:
+                stack.append(open_match.group(1))
         elif ch == ")":
-            if stack:
+            if stack:                   # a stray ")" from prose must not crash
                 stack.pop()
         idx += 1
 
 
+# ─── Whole-log detectors (plain-English hints) ────────────────────────────────
+
 def _detect_missing_packages(raw_log: str, result: ParsedLog) -> None:
-    """Add a friendly hint for each missing .sty package."""
-    for m in _RE_MISSING_PKG.finditer(raw_log):
-        pkg_name = m.group(1)
+    """Add a friendly hint for each missing .sty package.
+
+    TinyTeX installs packages on demand, so a missing .sty usually means the
+    auto-install did not happen (offline, or the package does not exist) — the
+    raw ``File 'x.sty' not found`` says nothing about what the user should do.
+    """
+    for match in _RE_MISSING_PKG.finditer(raw_log):
+        pkg_name = match.group(1)
+        # Skip when the line scan already reported this package, so the user is
+        # not shown the same missing package twice with different wording.
         if not any(pkg_name in e.message for e in result.errors):
             result.errors.append(LogEntry(
                 level="error",
@@ -385,23 +477,33 @@ def _detect_unicode_problem(raw_log: str, result: ParsedLog) -> None:
 
 def _dedupe(result: ParsedLog) -> None:
     """Collapse identical repeated entries (e.g. the same overfull box on every
-    page) so the UI shows each distinct problem once."""
+    page) so the UI shows each distinct problem once.
+
+    ``context`` is intentionally left out of the identity key: latexmk runs the
+    document two or three times, and the same problem can come back with a
+    slightly different context dump each pass while being one problem.
+    """
     for bucket_name in ("errors", "warnings", "badboxes", "info"):
         bucket = getattr(result, bucket_name)
         seen = set()
         unique: List[LogEntry] = []
-        for e in bucket:
-            key = (e.level, e.message, e.file, e.line)
+        for entry in bucket:
+            key = (entry.level, entry.message, entry.file, entry.line)
             if key not in seen:
                 seen.add(key)
-                unique.append(e)
+                unique.append(entry)
         setattr(result, bucket_name, unique)
 
 
 # ─── Summary Helper ───────────────────────────────────────────────────────────
 
 def get_log_summary(parsed: ParsedLog) -> str:
-    """Short human-readable summary shown above the log panel."""
+    """Short human-readable summary shown above the log panel.
+
+    Becomes the ``summary`` field of the compile response; ``compiler.py``
+    prefixes it with the failure text when no PDF was produced, so the wording
+    here stays neutral about success and only reports what was counted.
+    """
     parts = []
     if parsed.errors:
         parts.append(f"{len(parsed.errors)} error(s)")
