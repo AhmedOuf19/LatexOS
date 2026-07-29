@@ -68,3 +68,9 @@ tests/fixtures/**/*.pdf
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Compiled example output (regenerate by compiling examples/*.tex)
+examples/*.pdf
+examples/*.aux
+examples/*.log
+examples/*.out
