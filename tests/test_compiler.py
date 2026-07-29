@@ -577,6 +577,47 @@ class TestCompilerInternals:
         assert "chapter1.tex" not in installable   # user \input, not a package
         assert "logo.png" not in installable       # user asset, not a package
 
+    def test_missing_file_names_survive_trailing_punctuation(self):
+        """A filename at the end of a sentence must keep its extension.
+
+        Regression: bibtex writes "I couldn't open style file IEEEtran.bst."
+        with a full stop. That trailing '.' was captured as part of the name, so
+        Path(name).suffix became '' and the entry was discarded as "not a
+        package" — meaning a missing bibliography style could never be
+        auto-installed and the user saw an unexplained bibliography failure.
+        """
+        from backend.compiler import _installable_missing_files
+
+        for log_line in ("I couldn't open style file IEEEtran.bst.",
+                         "open file plainnat.bst. for reading",
+                         "! LaTeX Error: File `natbib.sty' not found."):
+            found = _installable_missing_files(log_line)
+            assert found, f"nothing captured from: {log_line}"
+            assert all(not name.endswith(".") for name in found), found
+            assert all(Path(name).suffix for name in found), found
+
+    def test_self_update_failure_does_not_latch_forever(self):
+        """A failed tlmgr self-update must not disable installs for the session.
+
+        It is retried once per compile, not once per process. Regression: an
+        early transient failure (offline at start-up, mirror briefly down) used
+        to latch process-wide, silently disabling on-demand package
+        installation for the life of the server with no way to discover why.
+        """
+        import backend.compiler as compiler
+
+        # A binary that cannot be executed raises OSError -> the failure path.
+        first_compile: set[str] = set()
+        assert compiler._tlmgr_self_update("not-a-real-binary-xyz", {}, first_compile) is False
+        assert compiler._SELF_UPDATE_MARKER in first_compile, "must not retry within one compile"
+        assert compiler._tlmgr_self_update("not-a-real-binary-xyz", {}, first_compile) is False
+        assert compiler._tlmgr_self_updated is False, "a failure must not latch process-wide"
+
+        # A LATER compile gets a fresh set, so it is allowed to try again.
+        second_compile: set[str] = set()
+        compiler._tlmgr_self_update("not-a-real-binary-xyz", {}, second_compile)
+        assert compiler._SELF_UPDATE_MARKER in second_compile
+
     def test_detects_tlmgr_needs_self_update(self):
         """Regression: a freshly-installed TinyTeX ships a tlmgr older than the
         remote repository and refuses to install anything until it self-updates.
