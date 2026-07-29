@@ -149,6 +149,23 @@ def _existing_session_dirs() -> list[Path]:
         return []
 
 
+def session_exists(session_id: str) -> bool:
+    """Return True if ``session_id`` names a workspace that exists right now.
+
+    Callers use this for re-checks where a missing session is an ordinary
+    outcome rather than an error - chiefly the write endpoint, which must
+    confirm the session still exists after reading the request body so that a
+    cleanup racing the upload cannot be "resurrected" as a ghost directory.
+
+    Like the rest of this module it *looks the name up* among the directories
+    that exist rather than joining it onto ``UPLOAD_DIR``, so a request string
+    never becomes part of a path expression.
+    """
+    if not is_valid_session_id(session_id):
+        return False
+    return any(entry.name == session_id for entry in _existing_session_dirs())
+
+
 def touch_session(session_id: str) -> None:
     """Refresh a session's last-access time so it is not reaped while in use.
 
