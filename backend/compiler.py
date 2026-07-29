@@ -445,25 +445,38 @@ _RE_TLMGR_NEEDS_SELF_UPDATE = re.compile(
     re.IGNORECASE,
 )
 
-# tlmgr self-update is attempted at most once per server process.
+# Set once tlmgr has SUCCESSFULLY updated itself, so the slow self-update is not
+# repeated for the rest of the server's life. A failed attempt deliberately does
+# not latch here – see _tlmgr_self_update.
 _tlmgr_self_updated = False
 
+# Marker stored in a compile's ``attempted`` set so a single compile never runs
+# the self-update twice, without that failure leaking into later compiles.
+_SELF_UPDATE_MARKER = "\x00tlmgr-self-update"
 
-def _tlmgr_self_update(tlmgr: str, env: dict) -> bool:
-    """Run ``tlmgr update --self``. Returns True if it appears to have worked.
 
-    Only ever runs once per process: it is slow, and if it fails once it will
-    keep failing (no network, read-only install, …).
+def _tlmgr_self_update(tlmgr: str, env: dict, attempted: set[str]) -> bool:
+    """Run ``tlmgr update --self``. Return True if it appears to have worked.
+
+    The retry policy matters because this gates ALL package installation:
+
+    * **Success latches process-wide** – it is slow (minutes) and needed once.
+    * **Failure latches for this compile only.** An early failure is usually
+      transient (the machine was offline when the server started, the mirror was
+      briefly down). Latching it permanently – as an earlier version did – meant
+      one unlucky moment silently disabled on-demand package installation until
+      the user restarted the app, with no way to discover why.
     """
     global _tlmgr_self_updated
-    if _tlmgr_self_updated:
+    if _tlmgr_self_updated or _SELF_UPDATE_MARKER in attempted:
         return False
-    _tlmgr_self_updated = True
+    attempted.add(_SELF_UPDATE_MARKER)   # once per compile, whatever happens
     try:
         _run([tlmgr, "update", "--self"], Path.cwd(), _TLMGR_SELF_UPDATE_TIMEOUT, env)
-        return True
     except (TimeoutError, OSError):
-        return False
+        return False                     # not latched: a later compile may retry
+    _tlmgr_self_updated = True
+    return True
 
 
 def _tool_env() -> dict:
@@ -488,7 +501,13 @@ def _installable_missing_files(raw_log: str) -> list[str]:
         name = next((group for group in match.groups() if group), None)
         if not name:
             continue
-        name = name.strip().strip("'\"")
+        # Strip quotes AND trailing sentence punctuation. Some phrasings end the
+        # sentence right after the filename ("I couldn't open style file
+        # IEEEtran.bst."), and that trailing full stop would otherwise become
+        # part of the name - making Path(name).suffix "" so the entry was
+        # silently discarded as "not a package", and a missing bibliography
+        # style could never be auto-installed.
+        name = name.strip().strip("'\"").rstrip(".,;:)")
         ext = Path(name).suffix.lower()
         # No extension means a log fragment or an \include target, never
         # something tlmgr could be asked to search for.
@@ -562,7 +581,7 @@ def _install_missing_packages(
         # Detect that from the OUTPUT (the .bat wrapper always exits 0), run the
         # self-update once, then retry this package.
         if _RE_TLMGR_NEEDS_SELF_UPDATE.search(out + err):
-            if _tlmgr_self_update(tlmgr, env):
+            if _tlmgr_self_update(tlmgr, env, attempted):
                 try:
                     _run([tlmgr, "install", pkg], Path.cwd(), _TLMGR_INSTALL_TIMEOUT, env)
                 except (TimeoutError, OSError):
@@ -888,7 +907,18 @@ def compile_project(
     stdout = stderr = ""
     attempted_installs: set[str] = set()   # files we've already tried to install
     install_failures: list[str] = []       # human-readable install problems
-    pre_pdf_mtime: float | None = None      # PDF mtime BEFORE the last compile
+
+    def _pdf_mtime(path: Path) -> float | None:
+        """Modification time of ``path``, or None when it does not exist."""
+        return path.stat().st_mtime if path.exists() else None
+
+    # The two places an engine may drop the PDF. Captured BEFORE any work starts
+    # so that if the loop below never runs (the deadline was already spent) a
+    # pre-existing PDF still fails the freshness test rather than being reported
+    # as this run's output.
+    root_pdf = workspace / f"{base_name}.pdf"
+    pre_pdf_mtime = _pdf_mtime(tex_dir / f"{base_name}.pdf")
+    pre_root_pdf_mtime = _pdf_mtime(root_pdf)
 
     try:
         # Compile, retrying after an on-demand package install if that helped.
@@ -901,10 +931,12 @@ def compile_project(
             # judged by "a non-empty PDF exists", so any surviving output from
             # an earlier attempt would report a failed compile as a success.
             _clean_artifacts(tex_dir, base_name, workspace)
-            # Record whether a PDF survived the clean (e.g. locked by a viewer)
-            # so a stale, undeletable PDF cannot later be mistaken for fresh.
-            pdf_before = tex_dir / f"{base_name}.pdf"
-            pre_pdf_mtime = pdf_before.stat().st_mtime if pdf_before.exists() else None
+            # Re-read after the clean. Normally both are gone (so None, and any
+            # new file is fresh by definition), but a PDF locked by a viewer or
+            # an AV scanner survives the delete - and must not then be mistaken
+            # for this run's output.
+            pre_pdf_mtime = _pdf_mtime(tex_dir / f"{base_name}.pdf")
+            pre_root_pdf_mtime = _pdf_mtime(root_pdf)
 
             if use_latexmk:
                 returncode, stdout, stderr = _compile_with_latexmk(
@@ -976,11 +1008,14 @@ def compile_project(
     pdf_file = tex_dir / f"{base_name}.pdf"
     success = _fresh_pdf(tex_dir, base_name, pre_pdf_mtime)
     if not success:
-        # Some setups drop the PDF at the workspace root instead. _clean_artifacts
-        # deletes that copy too, so existence alone is the freshness test here.
-        alt_pdf = workspace / f"{base_name}.pdf"
-        if alt_pdf.exists() and alt_pdf.stat().st_size > 0:
-            pdf_file, success = alt_pdf, True
+        # Some setups drop the PDF at the workspace root instead. This path gets
+        # the SAME freshness test as the primary one: _clean_artifacts normally
+        # deletes that copy, but if it could not (locked by a viewer or an AV
+        # scanner) an existence-only check would reintroduce exactly the
+        # stale-PDF-reported-as-success bug that _fresh_pdf exists to prevent.
+        success = _fresh_pdf(workspace, base_name, pre_root_pdf_mtime)
+        if success:
+            pdf_file = root_pdf
 
     if not success:
         summary = f"Compilation failed (exit code {returncode}). " + summary
