@@ -26,6 +26,24 @@ Correctness notes
   failed compile look successful.
 * ``TEXINPUTS`` / ``BIBINPUTS`` / ``BSTINPUTS`` include the workspace
   recursively, so resources uploaded into sub-folders are found.
+* A compile that produced a PDF is a success even with a non-zero exit code:
+  LaTeX routinely exits non-zero on a recoverable error while still typesetting
+  the document, and the errors are reported through the parsed log instead.
+
+On-demand package installation
+------------------------------
+The target user does not know that ``\\usepackage{tikz}`` needs a package
+installed. So when a compile fails with missing files, this module asks tlmgr
+for the package that provides each one, installs it and recompiles (bounded by
+``_MAX_INSTALL_RETRIES``, and only when ``AUTO_INSTALL_PACKAGES`` is on and the
+distribution is TinyTeX/TeX Live – MiKTeX installs packages by itself). Two
+traps shape that code:
+
+* ``tlmgr.bat`` on Windows exits 0 even when the install failed, so its exit
+  code proves nothing – every install is verified by asking kpsewhich whether
+  the file now resolves.
+* The file name is not the package name (``tikz.sty`` comes from ``pgf``), so
+  the package is only ever taken from a positive ``tlmgr search`` result.
 """
 
 from __future__ import annotations
@@ -111,6 +129,11 @@ class CompilationResult:
         returncode: int | None = None,
         engine: str = DEFAULT_ENGINE,
     ):
+        """Store one compile outcome.
+
+        ``pdf_path`` / ``log_path`` are None when that file was never produced,
+        so the API layer can branch on them without re-checking the filesystem.
+        """
         self.success = success
         self.pdf_path = pdf_path
         self.log_path = log_path
@@ -121,6 +144,13 @@ class CompilationResult:
         self.engine = engine
 
     def to_dict(self) -> dict:
+        """Return the JSON body of ``POST /api/compile``.
+
+        The keys here are a frontend contract – app.js reads them by name, so
+        they are never renamed. ``pdf_path`` / ``log_path`` are deliberately
+        left out: they are absolute server paths, and main.py exposes the PDF as
+        a ``pdf_url`` route instead of leaking the filesystem layout.
+        """
         # Always return a fully-structured log dict, even on failure, so the
         # frontend can rely on the keys existing.
         empty_log = {
@@ -148,13 +178,25 @@ class _Deadline:
     """
 
     def __init__(self, total_seconds: int):
+        """Start the budget now.
+
+        Uses ``time.monotonic`` rather than wall-clock time so a system clock
+        change (NTP sync, DST) cannot shorten or extend a running compile.
+        """
         self._end = time.monotonic() + total_seconds
 
     def remaining(self) -> int:
+        """Return the seconds left, as a subprocess timeout."""
         # Never return < 1s; a 0s timeout would kill a process instantly.
         return max(1, int(self._end - time.monotonic()))
 
     def expired(self) -> bool:
+        """True once the budget is spent.
+
+        Callers check this BEFORE starting another pass, because ``remaining()``
+        always claims at least 1s and would otherwise let an out-of-time compile
+        keep launching doomed passes.
+        """
         return time.monotonic() >= self._end
 
     def extend(self, seconds: float) -> None:
@@ -193,6 +235,12 @@ def _resolve_binary(name: str) -> str:
 
 
 def _has_binary(name: str) -> bool:
+    """True if ``name`` can be resolved – a probe for OPTIONAL tools.
+
+    Used to branch on tools a minimal TinyTeX may not ship (latexmk, biber,
+    makeglossaries, tlmgr) without letting the missing-tool exception abort the
+    whole compile.
+    """
     try:
         _resolve_binary(name)
         return True
@@ -216,7 +264,11 @@ def _build_env(workspace: Path) -> dict:
     if LATEX_BIN_PATH:
         env["PATH"] = LATEX_BIN_PATH + os.pathsep + env.get("PATH", "")
 
-    # Confine file I/O to the workspace subtree.
+    # Confine file I/O to the workspace subtree. 'p' = paranoid: kpathsea then
+    # rejects dotfiles, '..' escapes and absolute paths, so an uploaded .tex
+    # cannot \input a file from elsewhere on the disk nor \write one out.
+    # 'p' still permits paths under TEXMFOUTPUT, which is why it must point at
+    # the session workspace and nowhere wider.
     env["openin_any"] = "p"
     env["openout_any"] = "p"
     env["TEXMFOUTPUT"] = str(workspace)
@@ -334,13 +386,19 @@ def _clean_artifacts(tex_dir: Path, base_name: str, workspace: Path) -> None:
 
 
 def _aux_snapshot(tex_dir: Path, base_name: str) -> str:
-    """Return the .aux + .toc content, used to detect when reruns have settled."""
-    snap = ""
+    """Return the .aux + .toc content, used to detect when reruns have settled.
+
+    LaTeX resolves \\ref/\\cite/page numbers by writing them to the .aux (and the
+    TOC entries to the .toc) on one pass and reading them back on the next. So
+    two consecutive passes producing byte-identical files means every
+    cross-reference has converged and further passes cannot change the PDF.
+    """
+    snapshot = ""
     for ext in (".aux", ".toc"):
-        f = tex_dir / f"{base_name}{ext}"
-        if f.exists():
-            snap += _read_text_lossless(f)
-    return snap
+        aux_file = tex_dir / f"{base_name}{ext}"
+        if aux_file.exists():
+            snapshot += _read_text_lossless(aux_file)
+    return snapshot
 
 
 # ─── Bibliography detection ──────────────────────────────────────────────────
@@ -351,7 +409,13 @@ _RE_BIBLATEX = re.compile(r"\\usepackage\s*(?:\[[^\]]*\])?\s*\{biblatex\}")
 
 
 def _uses_biblatex(workspace: Path) -> bool:
-    """True if any .tex loads biblatex (which is processed by biber)."""
+    """True if any .tex loads biblatex (which is processed by biber).
+
+    Every .tex is scanned, not just the main file, because the preamble is often
+    split out into an included style file. The extra ``backend=biber`` substring
+    test catches the ``\\ExecuteBibliographyOptions`` spellings the regex does not
+    model; a false positive costs one wasted biber run, never a failed compile.
+    """
     for tex in workspace.rglob("*.tex"):
         try:
             content = tex.read_text(encoding="utf-8", errors="ignore")
@@ -412,27 +476,41 @@ def _tool_env() -> dict:
 
 def _installable_missing_files(raw_log: str) -> list[str]:
     """Extract missing files from a log that are plausibly installable packages
-    (i.e. not user images/data or a forgotten \\input .tex)."""
-    out: list[str] = []
+    (i.e. not user images/data or a forgotten \\input .tex).
+
+    Order is preserved and duplicates dropped, so the caller installs each
+    package once, in the order LaTeX first missed it.
+    """
+    installable: list[str] = []
     seen: set[str] = set()
-    for m in _RE_MISSING_FILE.finditer(raw_log):
-        name = next((g for g in m.groups() if g), None)
+    for match in _RE_MISSING_FILE.finditer(raw_log):
+        # _RE_MISSING_FILE is an alternation: exactly one group is set per hit.
+        name = next((group for group in match.groups() if group), None)
         if not name:
             continue
         name = name.strip().strip("'\"")
         ext = Path(name).suffix.lower()
+        # No extension means a log fragment or an \include target, never
+        # something tlmgr could be asked to search for.
         if not ext or ext in _NON_PACKAGE_EXTS or name in seen:
             continue
         seen.add(name)
-        out.append(name)
-    return out
+        installable.append(name)
+    return installable
 
 
 def _kpsewhich_finds(fname: str, env: dict) -> bool:
-    """True if kpathsea can now locate ``fname`` (proof an install worked)."""
+    """True if kpathsea can now locate ``fname`` (proof an install worked).
+
+    Deliberately run from the server's cwd with a plain tool env – not from the
+    session workspace – so a file the user uploaded cannot masquerade as a
+    successfully installed distribution package.
+    """
     if not _has_binary("kpsewhich"):
         return False
     try:
+        # 20s: this is a local filename-database lookup, so the timeout only
+        # exists to bound a hung process, not to allow for slow work.
         rc, out, _err = _run([_resolve_binary("kpsewhich"), fname], Path.cwd(), 20, env)
     except (TimeoutError, OSError, EnvironmentError):
         return False
@@ -455,15 +533,15 @@ def _install_missing_packages(
     if not AUTO_INSTALL_PACKAGES or not _has_binary("tlmgr"):
         return False
 
-    fresh = [f for f in _installable_missing_files(raw_log) if f not in attempted]
-    if not fresh:
+    newly_missing = [f for f in _installable_missing_files(raw_log) if f not in attempted]
+    if not newly_missing:
         return False
 
     tlmgr = _resolve_binary("tlmgr")
     env = _tool_env()
-    installed_any = False
+    has_installed_any = False
 
-    for fname in fresh:
+    for fname in newly_missing:
         attempted.add(fname)  # never retry the same file (forward progress)
         pkg = _tlmgr_package_for_file(tlmgr, fname, env)
         if not pkg:
@@ -499,10 +577,10 @@ def _install_missing_packages(
 
         # tlmgr.bat's exit code is unreliable; confirm the file now resolves.
         if _kpsewhich_finds(fname, env):
-            installed_any = True
+            has_installed_any = True
         else:
             failures.append(f"Package '{pkg}' did not provide '{fname}' after install.")
-    return installed_any
+    return has_installed_any
 
 
 def _tlmgr_package_for_file(tlmgr: str, fname: str, env: dict) -> str | None:
@@ -513,6 +591,9 @@ def _tlmgr_package_for_file(tlmgr: str, fname: str, env: dict) -> str | None:
     non-existent) package — e.g. tikz.sty is provided by 'pgf', not 'tikz'.
     """
     try:
+        # --global searches the remote catalogue (not just installed packages).
+        # The leading '/' anchors the pattern to a whole path component, so
+        # '/tikz.sty' cannot also match 'foo/mytikz.sty'.
         rc, out, _err = _run(
             [tlmgr, "search", "--global", "--file", f"/{fname}"],
             Path.cwd(), _TLMGR_SEARCH_TIMEOUT, env,
@@ -521,7 +602,11 @@ def _tlmgr_package_for_file(tlmgr: str, fname: str, env: dict) -> str | None:
         return None
     if rc != 0:
         return None
-    # tlmgr prints "pkgname:" header lines above each matching file path.
+    # tlmgr prints a "pkgname:" header line above each matching file path:
+    #   pgf:
+    #     texmf-dist/tex/latex/pgf/frontendlayer/tikz.sty
+    # so the '/' test rejects those file lines and the 'tlmgr' test rejects
+    # tlmgr's own status output ("tlmgr: package repository ...").
     for line in out.splitlines():
         line = line.strip()
         if line.endswith(":") and "/" not in line and not line.startswith("tlmgr"):
@@ -533,7 +618,13 @@ def _tlmgr_package_for_file(tlmgr: str, fname: str, env: dict) -> str | None:
 
 def _latexmk_cmd(tex_file: str, engine: EngineType,
                  allow_shell_escape: bool | None = None) -> list[str]:
-    """Build the latexmk command line for the chosen engine."""
+    """Build the latexmk command line for the chosen engine.
+
+    ``allow_shell_escape=None`` means "use the configured default", which keeps
+    the safe posture unless a caller opts in for one specific compile.
+    """
+    # latexmk needs to be told which engine to drive; plain latexmk would
+    # produce DVI, so pdflatex is selected with '-pdf' rather than by name.
     engine_flag = {
         "pdflatex": "-pdf",
         "xelatex": "-xelatex",
@@ -541,15 +632,21 @@ def _latexmk_cmd(tex_file: str, engine: EngineType,
     }[engine]
     if allow_shell_escape is None:
         allow_shell_escape = ALLOW_SHELL_ESCAPE
+    # '-no-shell-escape' is passed explicitly rather than relying on the default:
+    # TeX Live defaults to RESTRICTED shell-escape, which still lets a document
+    # run a whitelist of programs. Being explicit makes the posture independent
+    # of whatever texmf.cnf the user's distribution shipped.
     shell_flag = "-shell-escape" if allow_shell_escape else "-no-shell-escape"
     return [
         "latexmk",
         engine_flag,
+        # Never stop at TeX's interactive '?' prompt: nothing is attached to this
+        # subprocess's stdin, so a prompt would hang until the deadline kills it.
         "-interaction=nonstopmode",
         shell_flag,
         "-f",  # force: keep going after a document error so a PDF is still emitted
-        "-file-line-error",
-        "-synctex=0",
+        "-file-line-error",  # 'main.tex:12: msg' – the format log_parser expects
+        "-synctex=0",  # no editor↔PDF sync in this app; skip the .synctex.gz
         tex_file,
     ]
 
@@ -559,7 +656,13 @@ def _compile_with_latexmk(
     deadline: _Deadline, env: dict,
     allow_shell_escape: bool | None = None,
 ) -> tuple[int, str, str]:
-    """Run latexmk once (it handles its own multi-pass + bib logic)."""
+    """Run latexmk once – it decides how many passes to run and whether the
+    bibliography needs bibtex or biber, which is why it is the preferred path.
+
+    ``_latexmk_cmd`` emits the bare name ``latexmk`` so the flag set can be
+    unit-tested on a machine with no LaTeX installed; the resolved absolute path
+    is substituted here, at the point where it is actually executed.
+    """
     latexmk = _resolve_binary("latexmk")
     cmd = _latexmk_cmd(tex_file, engine, allow_shell_escape)
     cmd[0] = latexmk
@@ -568,7 +671,12 @@ def _compile_with_latexmk(
 
 def _engine_cmd(engine_bin: str, tex_file: str,
                 allow_shell_escape: bool | None = None) -> list[str]:
-    """Build a single-pass engine command with the given shell-escape policy."""
+    """Build a single-pass engine command with the given shell-escape policy.
+
+    Flags mirror ``_latexmk_cmd`` (see there for why each one is set). There is
+    no ``-f``: that is a latexmk switch, and a bare engine under nonstopmode
+    already runs to the end of the document despite errors.
+    """
     if allow_shell_escape is None:
         allow_shell_escape = ALLOW_SHELL_ESCAPE
     shell_flag = "-shell-escape" if allow_shell_escape else "-no-shell-escape"
@@ -589,6 +697,12 @@ def _compile_manual_passes(
 
     Pass 1 → bibliography (bibtex or biber, auto-detected) → rerun the engine
     until the .aux/.toc stop changing (or ``_MAX_MANUAL_PASSES`` is reached).
+
+    This re-implements, roughly, what latexmk does for us: a single engine pass
+    is not enough because \\ref, \\cite, page numbers and the table of contents
+    are written to the .aux/.toc on one pass and only read back on the next.
+    Every pass draws from the shared ``deadline``, so the fallback cannot
+    silently cost N times the configured timeout.
     """
     engine_bin = _resolve_binary(engine)
     base_name = Path(tex_file).stem
@@ -599,6 +713,12 @@ def _compile_manual_passes(
     returncode = 0
 
     def run_engine(label: str) -> None:
+        """Run one engine pass, tagging its output with ``label``.
+
+        Only the LAST return code is kept: early passes routinely fail on
+        not-yet-resolved references, so it is the final pass that says whether
+        the document compiled.
+        """
         nonlocal returncode
         rc, out, err = _run(cmd, workspace, deadline.remaining(), env)
         returncode = rc
@@ -616,11 +736,14 @@ def _compile_manual_passes(
     _run_index_glossary(base_name, workspace, deadline, env, out_chunks, err_chunks)
 
     # Re-run until references settle, bounded by _MAX_MANUAL_PASSES total passes.
+    # Two stop conditions, because either alone is unreliable: the .aux/.toc can
+    # be stable while the log still asks for a rerun (\pageref, longtable), and
+    # the log can be silent while the .aux is still changing.
     prev_snapshot = _aux_snapshot(workspace, base_name)
-    for i in range(2, _MAX_MANUAL_PASSES + 1):
+    for pass_number in range(2, _MAX_MANUAL_PASSES + 1):
         if deadline.expired():
             break
-        run_engine(f"Pass {i}")
+        run_engine(f"Pass {pass_number}")
         snapshot = _aux_snapshot(workspace, base_name)
         log_text = _read_text_lossless(workspace / f"{base_name}.log")
         if snapshot == prev_snapshot and not _RE_RERUN.search(log_text):
@@ -687,6 +810,10 @@ def _run_index_glossary(
     if the required tool is absent from a minimal TinyTeX, that is noted rather
     than silently producing an empty index/glossary.
     """
+    # (extension the engine emits when the feature is used, tool, arguments).
+    # The .nlo entry is the nomenclature package: unlike \index it has no
+    # dedicated tool, so makeindex must be pointed at nomencl's own style file
+    # and told to write .nls, the name nomencl reads back on the next pass.
     jobs = [
         (".idx", "makeindex", [base_name + ".idx"]),
         (".glo", "makeglossaries", [base_name]),
@@ -728,6 +855,11 @@ def compile_project(
     ``allow_shell_escape`` enables ``\\write18`` for THIS compile only (needed by
     minted/svg). It defaults to the ``LATEX_ALLOW_SHELL_ESCAPE`` config value,
     which is off — callers must opt in deliberately, per document.
+
+    Never raises for an ordinary failure: a timeout, a missing binary or a
+    broken document all come back as a ``CompilationResult`` with
+    ``success=False`` and a human-readable ``summary``, because the caller is an
+    HTTP handler that must answer either way.
     """
     if allow_shell_escape is None:
         allow_shell_escape = ALLOW_SHELL_ESCAPE
@@ -742,7 +874,9 @@ def compile_project(
             duration_seconds=0, engine=engine,
         )
 
-    # latexmk runs in the directory that contains the main .tex.
+    # Compile from the directory that contains the main .tex, not the workspace
+    # root: relative \input/\includegraphics paths in the document are written
+    # relative to it, so a main.tex inside a sub-folder only resolves from there.
     tex_dir = tex_path.parent
     tex_filename = tex_path.name
     base_name = tex_path.stem
@@ -758,9 +892,14 @@ def compile_project(
 
     try:
         # Compile, retrying after an on-demand package install if that helped.
+        # '+1' because the first iteration is the compile itself; only the
+        # remaining _MAX_INSTALL_RETRIES are install-and-try-again rounds.
         for attempt in range(_MAX_INSTALL_RETRIES + 1):
             if deadline.expired():
                 break
+            # MUST happen before every attempt, including retries: success is
+            # judged by "a non-empty PDF exists", so any surviving output from
+            # an earlier attempt would report a failed compile as a success.
             _clean_artifacts(tex_dir, base_name, workspace)
             # Record whether a PDF survived the clean (e.g. locked by a viewer)
             # so a stale, undeletable PDF cannot later be mistaken for fresh.
@@ -794,16 +933,20 @@ def compile_project(
                 break
             # Feed the engine .log AND the bibtex/biber .blg (missing .bst errors
             # live there, not in the .log) into the installer.
-            raw = _read_text_lossless(tex_dir / f"{base_name}.log")
-            blg = _read_text_lossless(tex_dir / f"{base_name}.blg")
-            raw = "\n".join(x for x in (raw, blg, stdout, stderr) if x)
+            engine_log = _read_text_lossless(tex_dir / f"{base_name}.log")
+            bib_log = _read_text_lossless(tex_dir / f"{base_name}.blg")
+            combined_log = "\n".join(
+                text for text in (engine_log, bib_log, stdout, stderr) if text
+            )
             # tlmgr hits the network; don't let that time count against the
             # compile budget – extend the deadline by the install wall-time.
-            t0 = time.monotonic()
-            installed = _install_missing_packages(raw, attempted_installs, install_failures)
-            deadline.extend(time.monotonic() - t0)
-            if not installed:
-                break
+            install_started_at = time.monotonic()
+            did_install_any = _install_missing_packages(
+                combined_log, attempted_installs, install_failures
+            )
+            deadline.extend(time.monotonic() - install_started_at)
+            if not did_install_any:
+                break  # nothing new resolved, so another compile would fail identically
 
     except TimeoutError as e:
         return CompilationResult(
@@ -821,6 +964,9 @@ def compile_project(
     duration = time.monotonic() - start_time
 
     # ── Read and parse the .log ──────────────────────────────────────────────
+    # The .log is the authoritative source (stdout is truncated at TeX's
+    # max_print_line and interleaves passes); stdout+stderr is only a last
+    # resort for when the engine died before writing a log at all.
     log_file = tex_dir / f"{base_name}.log"
     raw_log = _read_text_lossless(log_file) if log_file.exists() else (stdout + "\n" + stderr)
     parsed = parse_log(raw_log)
@@ -830,7 +976,8 @@ def compile_project(
     pdf_file = tex_dir / f"{base_name}.pdf"
     success = _fresh_pdf(tex_dir, base_name, pre_pdf_mtime)
     if not success:
-        # Some setups drop the PDF at the workspace root instead.
+        # Some setups drop the PDF at the workspace root instead. _clean_artifacts
+        # deletes that copy too, so existence alone is the freshness test here.
         alt_pdf = workspace / f"{base_name}.pdf"
         if alt_pdf.exists() and alt_pdf.stat().st_size > 0:
             pdf_file, success = alt_pdf, True
@@ -853,6 +1000,8 @@ def compile_project(
         engine=engine,
     )
 
+
+# ─── Outcome classification ──────────────────────────────────────────────────
 
 def _fresh_pdf(tex_dir: Path, base_name: str, pre_mtime: float | None = None) -> bool:
     """True if a non-empty PDF for ``base_name`` was produced by THIS run.
@@ -880,12 +1029,22 @@ def _latexmk_infra_failed(tex_dir: Path, base_name: str, stderr: str) -> bool:
     """
     if not (tex_dir / f"{base_name}.log").exists():
         return True
+    # 'Can't locate' is Perl's missing-module message; 'is not recognized' is
+    # cmd.exe's and 'command not found' the shell's - all mean latexmk never ran.
     return bool(re.search(r"perl|Can't locate|is not recognized|command not found",
                           stderr, re.IGNORECASE))
 
 
+# ─── Environment probe ───────────────────────────────────────────────────────
+
 def check_latex_available() -> dict:
-    """Report which LaTeX tools are available (used by /api/status and run.py)."""
+    """Report which LaTeX tools are available (used by /api/status and run.py).
+
+    Reports rather than raises: only an engine is strictly required. A missing
+    latexmk just means the manual fallback, a missing biber/bibtex means no
+    bibliography, and a missing tlmgr means no on-demand package installation —
+    all things the status panel should show the user instead of failing on.
+    """
     tools = ["pdflatex", "xelatex", "lualatex", "latexmk", "bibtex", "biber", "tlmgr"]
     result = {}
     for tool in tools:

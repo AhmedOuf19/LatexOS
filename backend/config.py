@@ -14,6 +14,11 @@ Design goals reflected in this file
   so a folder-local LaTeX distribution is preferred.
 * **Bounded.** Upload size, ZIP-extraction size, member count and log-read size
   all have explicit limits so a single request cannot exhaust memory or disk.
+
+Everything here is evaluated **once, at import time**. Changing an environment
+variable (or installing LaTeX) while the server is running has no effect until
+it is restarted — which is also what makes these values safe to read as plain
+module constants from anywhere in the backend.
 """
 
 from __future__ import annotations
@@ -35,11 +40,15 @@ def _get_bool(name: str, default: bool) -> bool:
 
     Accepts the usual truthy spellings (1/true/yes/on, case-insensitive).
     Anything else – including an unset variable – yields ``default``.
+
+    Note the asymmetry: an unrecognised value reads as *false*, not as
+    ``default``. For the security-sensitive flags below that is the safe way
+    round — a mistyped ``LATEX_ALLOW_SHELL_ESCAPE=treu`` leaves shell-escape off.
     """
-    raw = os.getenv(name)
-    if raw is None:
+    raw_value = os.getenv(name)
+    if raw_value is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _get_int(name: str, default: int) -> int:
@@ -180,20 +189,25 @@ def _find_latex_bin() -> str | None:
         Path(r"C:\texlive\2022\bin\win32"),
     ]
 
-    for d in local_candidates + system_candidates:
-        if d.is_dir() and (d / exe).exists():
-            return str(d)
+    # Order matters: local_candidates first, so a portable copy always beats a
+    # system install rather than the other way round.
+    for candidate_dir in local_candidates + system_candidates:
+        if candidate_dir.is_dir() and (candidate_dir / exe).exists():
+            return str(candidate_dir)
 
-    # 4. Fall back to PATH.
+    # 4. Fall back to PATH. Imported here because only this last-resort branch
+    #    needs shutil.
     import shutil
 
-    found = shutil.which("pdflatex")
-    if found:
-        return str(Path(found).parent)
+    pdflatex_on_path = shutil.which("pdflatex")
+    if pdflatex_on_path:
+        return str(Path(pdflatex_on_path).parent)
 
     return None
 
 
+# Resolved once at import. Installing LaTeX after the server has started
+# therefore requires a restart before the app can see it.
 LATEX_BIN_PATH: str | None = _find_latex_bin()
 
 # ─── Logging ──────────────────────────────────────────────────────────────────

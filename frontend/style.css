@@ -1,12 +1,47 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   LaTeX Studio – Premium Dark UI
-   Design System: Dark mode, green accents, glassmorphism panels
+   style.css - the entire visual layer of LaTeX Studio.
+
+   There is no CSS framework and no build step: this single file styles the
+   whole app and index.html links it directly. It reads top-to-bottom as
+   design tokens -> reset -> app chrome (header, status bar) -> the three
+   panels in the left-to-right order they appear on screen -> floating layers
+   (toasts) -> utilities.
+
+   DESIGN SYSTEM
+   * Dark only. Every colour comes from a custom property in :root - avoid
+     hard-coding a hex outside that block or the palette stops being one thing.
+   * Green accent (Overleaf-inspired) marks whatever the user acts on: the
+     compile button, the detected main .tex file, drop-zone hover, focus rings.
+   * Compile-log severity uses four semantic ramps (error / warn / info /
+     success), each a bg + border + text triple so a level can be applied to a
+     badge, a row and a summary bar and still look like the same thing.
+
+   THINGS TO KNOW BEFORE EDITING
+   * Class names are a contract, not decoration. app.js toggles many of them by
+     name (hidden, drag-over, compiling, active, is-main, "log-entry <level>",
+     "toast <type>") and tests/test_frontend.py guards the ids in index.html.
+     Renaming a class here breaks the app silently - nothing errors, the styling
+     just stops applying.
+   * Desktop-only on purpose: there are NO media queries. The layout is a fixed
+     three-column grid, because this is a local tool launched on the same
+     machine that runs the LaTeX compiler, not a site served to phones.
+   * Panels scroll internally; the page itself never scrolls. That is enforced
+     by `html, body { overflow: hidden }` plus `min-height: 0` on every flex
+     child that contains a scroller. `min-height: 0` looks redundant but is not:
+     without it a flex item refuses to shrink below its content, so the panel
+     grows past the viewport instead of growing its own scrollbar.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* ── Self-hosted fonts ─────────────────────────────────────────────────────
-   Downloaded into frontend/vendor/fonts by install so the app works offline.
-   If the files are absent, the browser silently falls back to the system fonts
-   listed in --font-sans / --font-mono, so nothing breaks. */
+/* ═══════════════════════════════════════════════════════════════
+   FONTS - self-hosted so the app works with no internet at all
+   ═══════════════════════════════════════════════════════════════ */
+
+/* scripts/install.ps1 downloads these into frontend/vendor/fonts. If the
+   files are absent the @font-face rule never matches and the browser falls
+   through to the system stacks in --font-sans / --font-mono: the UI looks
+   plainer but nothing breaks, which is why no other code checks for them.
+   font-display: swap paints text immediately in the fallback face instead of
+   leaving the interface blank while the woff2 downloads. */
 @font-face {
   font-family: 'Inter'; font-style: normal; font-weight: 300 700; font-display: swap;
   src: url('/static/vendor/fonts/inter.woff2') format('woff2');
@@ -16,7 +51,13 @@
   src: url('/static/vendor/fonts/jetbrains-mono.woff2') format('woff2');
 }
 
-/* ── CSS Variables / Design Tokens ─────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   DESIGN TOKENS - the single source of truth for the whole theme
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Change a value here and it propagates everywhere. The surface colours are
+   ordered by elevation (base is furthest back, active is nearest the user), so
+   a hover/active state is usually "move one step up this list". */
 :root {
   /* Color Palette */
   --bg-base:          #0d1117;
@@ -40,9 +81,14 @@
   --accent-300:       #86efac;
   --accent-600:       #16a34a;
   --accent-700:       #15803d;
+  /* Translucent accent for tinted fills (drop-zone glow, main-file row). Kept
+     as rgba rather than a solid so it layers over any surface colour. */
   --accent-glow:      rgba(34, 197, 94, 0.15);
 
-  /* Semantic Colors */
+  /* Semantic Colors - one bg/border/text triple per compile-log severity, so
+     an error looks the same whether it is a badge, a row or the summary bar.
+     The backgrounds are deliberately low-alpha: log rows sit on several
+     different surfaces and a solid fill would clash with all but one. */
   --error-bg:         rgba(239, 68, 68, 0.12);
   --error-border:     rgba(239, 68, 68, 0.3);
   --error-text:       #f87171;
@@ -51,6 +97,8 @@
   --warn-border:      rgba(234, 179, 8, 0.3);
   --warn-text:        #fbbf24;
 
+  /* "info" is the ramp used for LaTeX badboxes (over/underfull boxes) - they
+     are noise rather than problems, so they read as blue, not yellow. */
   --info-bg:          rgba(59, 130, 246, 0.1);
   --info-border:      rgba(59, 130, 246, 0.25);
   --info-text:        #93c5fd;
@@ -59,13 +107,19 @@
   --success-border:   rgba(34, 197, 94, 0.25);
   --success-text:     #4ade80;
 
-  /* Layout */
+  /* Layout - header and status bar are fixed-height so the middle grid can
+     claim "everything else"; the toast stack also offsets itself by
+     --statusbar-height so notifications never cover the status text. */
   --header-height:    52px;
   --statusbar-height: 28px;
   --left-panel-width: 280px;
+  /* NOTE: --right-panel-width sizes the header's right-hand cluster only. The
+     actual right panel is a 1fr grid column (see .app-layout); the two values
+     are intentionally independent. */
   --right-panel-width:320px;
 
-  /* Typography */
+  /* Typography - the quoted families are the self-hosted ones above; the rest
+     of each stack is the offline fallback. */
   --font-sans:        'Inter', system-ui, -apple-system, sans-serif;
   --font-mono:        'JetBrains Mono', 'Cascadia Code', monospace;
 
@@ -79,23 +133,32 @@
   --shadow-md:  0 4px 12px rgba(0,0,0,0.5);
   --shadow-glow: 0 0 20px rgba(34, 197, 94, 0.2);
 
-  /* Transitions */
+  /* Transitions - two speeds only. "fast" for anything that follows the
+     pointer (hover, focus), "med" for state changes the user should notice. */
   --transition-fast:  150ms ease;
   --transition-med:   250ms ease;
 }
 
-/* ── Reset & Base ───────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   RESET & BASE - app-shell behaviour, not decoration
+   ═══════════════════════════════════════════════════════════════ */
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
+/* The app is a fixed-viewport shell, like a desktop window: the page itself
+   must never scroll, only the individual panels. Removing this overflow makes
+   the header and status bar scroll away. */
 html, body {
   height: 100%;
   overflow: hidden;
 }
 
+/* body is the outer column: header / .app-layout / status bar stacked
+   vertically, with the layout taking the leftover height. */
 body {
   font-family: var(--font-sans);
   background: var(--bg-base);
@@ -107,6 +170,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Visually hidden but still announced by screen readers - used for <label>s
+   whose visible text would be redundant (e.g. the engine <select>). Do not
+   swap this for display:none, which would remove it from the a11y tree too. */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -119,13 +185,19 @@ body {
   border: 0;
 }
 
-/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+/* ── Scrollbar ──────────────────────────────────────────────────────────────
+   WebKit-only (Chrome/Edge, the Windows targets). Firefox keeps its native
+   scrollbars; that is acceptable degradation, not a bug. Thin and transparent
+   so the many nested scrollers do not visually fight each other. */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-muted); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-/* ════════════════════════════ HEADER ════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   HEADER - logo, install status, engine picker, API-docs link
+   ═══════════════════════════════════════════════════════════════ */
+
 .app-header {
   height: var(--header-height);
   background: var(--bg-surface);
@@ -138,6 +210,9 @@ body {
   z-index: 100;
 }
 
+/* Three-part header. The outer two get a min-width equal to their panel so the
+   centred status pill lines up with the middle of the screen instead of
+   drifting as the logo or button text changes width. */
 .header-left { display: flex; align-items: center; min-width: var(--left-panel-width); }
 .header-center { flex: 1; display: flex; justify-content: center; }
 .header-right { display: flex; align-items: center; gap: 8px; min-width: var(--right-panel-width); justify-content: flex-end; }
@@ -169,7 +244,8 @@ body {
   color: var(--accent-400);
 }
 
-/* Header Status */
+/* Header Status - the pill reporting whether TinyTeX was found. This is the
+   first thing a non-technical user looks at when compiling fails. */
 .header-status {
   display: flex;
   align-items: center;
@@ -182,6 +258,8 @@ body {
   padding: 4px 14px;
 }
 
+/* app.js rewrites this element's whole className to "status-dot <state>",
+   so every state below must stay a single-class modifier. */
 .status-dot {
   width: 8px;
   height: 8px;
@@ -192,6 +270,7 @@ body {
 }
 .status-dot.ok    { background: var(--accent-500); box-shadow: 0 0 6px var(--accent-500); }
 .status-dot.error { background: var(--error-text); box-shadow: 0 0 6px var(--error-text); }
+/* Added while a compile is in flight so the dot reads as "working", not "ok". */
 .status-dot.pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
 
 @keyframes pulse-dot {
@@ -199,7 +278,8 @@ body {
   50%       { opacity: 0.5; transform: scale(0.8); }
 }
 
-/* Engine Selector */
+/* Engine Selector - monospaced because the options are literal binary names
+   (pdflatex / xelatex / lualatex) that the backend runs verbatim. */
 .engine-select {
   background: var(--bg-elevated);
   color: var(--text-primary);
@@ -213,9 +293,13 @@ body {
   transition: border-color var(--transition-fast);
 }
 .engine-select:hover  { border-color: var(--border-muted); }
+/* outline is suppressed above, so the accent border IS the focus indicator -
+   removing this line makes the control keyboard-inaccessible in practice. */
 .engine-select:focus  { border-color: var(--accent-500); }
 
-/* Header Button */
+/* Header Button - low-emphasis outline button (currently only "API Docs").
+   Styled as a class rather than an element selector because it is used on both
+   <a> and <button>. */
 .header-btn {
   display: flex;
   align-items: center;
@@ -233,7 +317,12 @@ body {
 }
 .header-btn:hover { border-color: var(--border-muted); color: var(--text-primary); background: var(--bg-hover); }
 
-/* ════════════════════════════ MAIN LAYOUT ═══════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   MAIN LAYOUT - the three-column grid and the panel chrome
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Left column is a fixed sidebar; editor and PDF split the rest evenly. There
+   is no splitter/drag-to-resize, so these proportions are the layout. */
 .app-layout {
   display: grid;
   grid-template-columns: var(--left-panel-width) 1fr 1fr;
@@ -242,7 +331,10 @@ body {
   min-height: 0;
 }
 
-/* ── Panel Base ─────────────────────────────────────────────────────────── */
+/* ── Panel Base ─────────────────────────────────────────────────────────────
+   Every panel is a vertical flex column: fixed-height toolbars plus one
+   flex:1 scrolling body. `overflow: hidden` here is what confines scrolling to
+   that body instead of letting it spill onto the page. */
 .panel {
   display: flex;
   flex-direction: column;
@@ -251,9 +343,16 @@ body {
 }
 
 .panel-left  { background: var(--bg-surface); }
+/* position: relative is load-bearing: it makes this panel the containing block
+   for .editor-empty-state, which is absolutely positioned over the editor.
+   Drop it and the overlay escapes to the viewport and covers the whole app. */
 .panel-center { background: var(--bg-base); border-right: 1px solid var(--border-default); position: relative; }
+/* Last column - cancel the shared right border so there is no line against the
+   window edge. */
 .panel-right  { background: var(--bg-surface); border-right: none; }
 
+/* Small-caps section title shared by every panel ("UPLOAD FILES", "PROJECT
+   FILES", "PDF PREVIEW"). */
 .panel-heading {
   display: flex;
   align-items: center;
@@ -274,17 +373,27 @@ body {
   flex-shrink: 0;
 }
 
+/* The log's toolbar sits UNDER the PDF viewport rather than at the top of a
+   panel, so it needs a top rule as well as the inherited bottom one. */
 .log-toolbar {
   border-top: 1px solid var(--border-default);
 }
 
-/* Editor & Image Viewer */
+/* ── Center panel: editor & image preview ───────────────────────────────────
+   Three mutually exclusive views share this panel and app.js swaps them with
+   .hidden: the Monaco/textarea editor, the image viewer, and the empty state. */
+
+/* Host element for Monaco. Monaco measures its own container, so this must
+   have a real resolved height - hence flex:1 plus min-height:0 rather than a
+   percentage height. */
 .editor-container {
   flex: 1;
   background: var(--bg-base);
   min-height: 0;
 }
 
+/* Shown instead of the editor when the opened file is an image (.png, .jpg,
+   .svg …), which Monaco cannot display. */
 .image-viewer {
   flex: 1;
   display: flex;
@@ -303,7 +412,9 @@ body {
 }
 
 /* The "Select a file" message is an OVERLAY, not a flex sibling, so it never
-   splits the panel 50/50 with an empty editor. Hidden once a file is open. */
+   splits the panel 50/50 with an empty editor. Hidden once a file is open.
+   It is anchored by .panel-center's position:relative; z-index keeps it above
+   the editor host, which is painted first. */
 .editor-empty-state {
   position: absolute;
   inset: 0;
@@ -316,7 +427,10 @@ body {
   z-index: 2;
 }
 
-/* Plain-textarea editor used when Monaco was not vendored (offline fallback). */
+/* Plain-textarea editor used when Monaco was not vendored (offline fallback).
+   app.js creates this element at runtime and appends it into
+   .editor-container, so it must fill its parent exactly - Monaco's own styling
+   is not there to do it. */
 .fallback-editor {
   width: 100%;
   height: 100%;
@@ -332,7 +446,10 @@ body {
   tab-size: 2;
 }
 
-/* Log Section styling for right panel */
+/* ── Right panel: log container ─────────────────────────────────────────────
+   Sibling of .pdf-viewport, which is also flex:1, so showing the log splits
+   the right panel roughly in half. Toggled wholesale via .hidden by the
+   "Toggle Log" button. */
 .log-section {
   flex: 1;
   display: flex;
@@ -343,6 +460,7 @@ body {
 
 .toolbar-actions { display: flex; align-items: center; gap: 6px; }
 
+/* Heading row with a trailing action button (e.g. Project Files + clear). */
 .section-header {
   display: flex;
   align-items: center;
@@ -350,9 +468,11 @@ body {
   padding: 10px 14px 6px;
 }
 
-/* ════════════════════════ LEFT PANEL ════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   LEFT PANEL - upload, file tree, main-file picker, compile button
+   ═══════════════════════════════════════════════════════════════ */
 
-/* Upload Section */
+/* ── Upload section ─────────────────────────────────────────────────────── */
 .upload-section {
   padding: 14px;
   border-bottom: 1px solid var(--border-subtle);
@@ -363,7 +483,10 @@ body {
   margin-bottom: 10px;
 }
 
-/* Drop Zone */
+/* ── Drop zone ──────────────────────────────────────────────────────────────
+   Clicking anywhere in it opens the file picker, because a transparent
+   <input type="file"> is stretched over the whole box (.file-input-hidden).
+   position:relative anchors that input and the ::before glow layer. */
 .drop-zone {
   position: relative;
   border: 2px dashed var(--border-muted);
@@ -376,6 +499,8 @@ body {
   overflow: hidden;
 }
 
+/* Hover/drag glow lives on a pseudo-element rather than the box's own
+   background so it can fade in independently of the border colour animation. */
 .drop-zone::before {
   content: '';
   position: absolute;
@@ -383,9 +508,12 @@ body {
   background: linear-gradient(135deg, var(--accent-glow), transparent);
   opacity: 0;
   transition: opacity var(--transition-med);
-  border-radius: calc(var(--radius-md) - 2px);
+  border-radius: calc(var(--radius-md) - 2px);  /* inset by the 2px dashed border */
 }
 
+/* :focus is grouped with :hover deliberately - the zone is a role="button"
+   with tabindex=0, and the accent border is its only focus indicator once
+   `outline: none` is applied below. */
 .drop-zone:hover,
 .drop-zone:focus,
 .drop-zone.drag-over {
@@ -399,11 +527,15 @@ body {
   opacity: 1;
 }
 
+/* .drag-over is added by app.js on dragenter/dragover. The extra lift makes
+   "you may drop now" unmistakable, which matters because a failed drop is
+   silent. */
 .drop-zone.drag-over {
   transform: scale(1.01);
   box-shadow: var(--shadow-glow);
 }
 
+/* Sits above the ::before glow, which would otherwise paint over the text. */
 .drop-zone-content { position: relative; z-index: 1; }
 
 .drop-icon {
@@ -422,6 +554,8 @@ body {
   color: var(--text-secondary);
   margin-bottom: 4px;
 }
+/* Looks like a link but is a <span>: the whole zone is already the click
+   target, so making it an <a> would nest interactive controls. */
 .drop-link {
   color: var(--accent-400);
   cursor: pointer;
@@ -433,6 +567,10 @@ body {
   line-height: 1.4;
 }
 
+/* The real <input type="file">: invisible but still hit-testable, stretched
+   across the drop zone so a click anywhere opens the OS picker. opacity:0
+   (not display:none / visibility:hidden) is required - a hidden input receives
+   no clicks. */
 .file-input-hidden {
   position: absolute;
   inset: 0;
@@ -442,7 +580,7 @@ body {
   height: 100%;
 }
 
-/* Upload Progress */
+/* ── Upload progress ────────────────────────────────────────────────────── */
 .upload-progress {
   margin-top: 10px;
 }
@@ -453,6 +591,8 @@ body {
   overflow: hidden;
   margin-bottom: 6px;
 }
+/* Width is driven from app.js as a percentage; the transition smooths the
+   jumpy XHR progress events into continuous motion. */
 .progress-bar-fill {
   height: 100%;
   width: 0%;
@@ -462,6 +602,8 @@ body {
   position: relative;
   overflow: hidden;
 }
+/* Travelling highlight so the bar still looks alive when a large upload stalls
+   at one percentage for a while. */
 .progress-bar-fill::after {
   content: '';
   position: absolute;
@@ -478,7 +620,10 @@ body {
   color: var(--text-muted);
 }
 
-/* File Tree */
+/* ── File tree ──────────────────────────────────────────────────────────────
+   Flat list of the uploaded project files (no real nesting today). The section
+   is the flexible middle of the left panel: it absorbs leftover height and
+   scrolls, keeping the upload box and compile button always visible. */
 .file-tree-section {
   flex: 1;
   overflow: hidden;
@@ -500,6 +645,9 @@ body {
   font-size: 12px;
 }
 
+/* Rows are <div role="button">, not <li>; app.js rebuilds them on every
+   upload. cursor:default (not pointer) is deliberate - these open a file in
+   the editor rather than navigating. */
 .file-item {
   display: flex;
   align-items: center;
@@ -511,6 +659,9 @@ body {
   list-style: none;
 }
 .file-item:hover { background: var(--bg-hover); }
+/* .is-main marks the auto-detected main .tex - the file that will actually be
+   compiled. Highlighting it prevents the classic "why did nothing change?"
+   confusion when a user edits an included file instead. */
 .file-item.is-main { background: var(--accent-glow); border-left: 2px solid var(--accent-500); }
 
 .file-icon { flex-shrink: 0; font-size: 13px; }
@@ -518,7 +669,7 @@ body {
   font-size: 12.5px;
   color: var(--text-primary);
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: ellipsis;   /* long paths truncate rather than widen the panel */
   white-space: nowrap;
   flex: 1;
 }
@@ -526,11 +677,13 @@ body {
   font-size: 10.5px;
   color: var(--text-muted);
   flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums;  /* keeps the size column from jittering */
 }
 .file-item.is-main .file-name { color: var(--accent-300); font-weight: 500; }
 
-/* Main File Selector */
+/* ── Main file selector ─────────────────────────────────────────────────────
+   Override for when auto-detection picked the wrong .tex. Revealed by app.js
+   only once at least one .tex has been uploaded. */
 .main-file-selector {
   padding: 8px 14px;
   border-top: 1px solid var(--border-subtle);
@@ -544,16 +697,20 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+/* Id selector because this one <select> must fill the sidebar, unlike the
+   header's engine picker which shares the same .engine-select class. */
 #mainFileSelect { width: 100%; }
 
-/* Compile Button */
+/* ── Compile actions ────────────────────────────────────────────────────── */
 .compile-actions {
   padding: 14px;
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
 
-/* Shell-escape opt-in: deliberately understated, but clearly a switch. */
+/* Shell-escape opt-in: deliberately understated, but clearly a switch.
+   Understated because enabling it lets an uploaded document run programs on
+   the user's machine - it should not look like a feature to turn on casually. */
 .shell-escape-toggle {
   display: flex;
   align-items: center;
@@ -565,6 +722,8 @@ body {
   user-select: none;
 }
 .shell-escape-toggle input {
+  /* --accent-primary is not defined in :root, so the literal fallback is what
+     actually applies. It matches --accent-500. */
   accent-color: var(--accent-primary, #22c55e);
   width: 14px;
   height: 14px;
@@ -572,9 +731,13 @@ body {
   flex-shrink: 0;
 }
 .shell-escape-toggle:hover { color: var(--text-primary); }
+/* Explicit focus ring: a security-relevant control must stay obviously
+   reachable by keyboard. */
 .shell-escape-toggle input:focus-visible { outline: 2px solid var(--accent-primary, #22c55e); outline-offset: 2px; }
 .shell-escape-hint { color: var(--text-muted); }
 
+/* The primary action of the entire app - full width and the only
+   gradient-filled button, so it is unmistakable to a first-time user. */
 .compile-btn {
   width: 100%;
   height: 44px;
@@ -596,6 +759,8 @@ body {
   box-shadow: 0 2px 8px rgba(34, 197, 94, 0.25);
 }
 
+/* Hover sheen as an overlay: you cannot transition a gradient's colour stops,
+   so brightening is done by fading in a second gradient on top. */
 .compile-btn::before {
   content: '';
   position: absolute;
@@ -605,6 +770,8 @@ body {
   transition: opacity var(--transition-fast);
 }
 
+/* :not(:disabled) on every interactive state - without it a disabled button
+   still lifts and glows on hover, implying it can be clicked. */
 .compile-btn:hover:not(:disabled)::before { opacity: 1; }
 .compile-btn:hover:not(:disabled) {
   transform: translateY(-1px);
@@ -614,18 +781,24 @@ body {
   transform: translateY(0);
   box-shadow: 0 2px 8px rgba(34, 197, 94, 0.25);
 }
+/* Disabled until files are uploaded. */
 .compile-btn:disabled {
   background: var(--bg-elevated);
   color: var(--text-muted);
   cursor: not-allowed;
   box-shadow: none;
 }
+/* .compiling is added by app.js for the duration of the request. pointer-events
+   is the real guard against double-submitting a compile; the wait cursor and
+   flat background are just the visual half. */
 .compile-btn.compiling {
   background: var(--bg-elevated);
   cursor: wait;
   pointer-events: none;
 }
 
+/* Wrapper for icon + label so the spinner can be a separate sibling that is
+   shown/hidden without disturbing their layout. */
 .compile-btn-inner {
   display: flex;
   align-items: center;
@@ -643,16 +816,20 @@ body {
   width: 18px;
   height: 18px;
   border: 2px solid rgba(255,255,255,0.2);
-  border-top-color: white;
+  border-top-color: white;   /* only the top edge is opaque - that's the "sweep" */
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
 
+/* Shared by .compile-spinner and the PDF .ring elements. */
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
 
-/* Icon Button */
+/* ── Icon button ────────────────────────────────────────────────────────────
+   Square, borderless-until-hover button for toolbar actions (clear session,
+   copy log). The transparent border is a placeholder so the hover border does
+   not shift the layout by 1px. */
 .icon-btn {
   display: flex;
   align-items: center;
@@ -671,9 +848,17 @@ body {
   border-color: var(--border-default);
   color: var(--text-primary);
 }
+/* .danger only turns red on hover - destructive actions should not shout at
+   rest, but must confirm their nature before the click. */
 .icon-btn.danger:hover { color: var(--error-text); border-color: var(--error-border); }
 
-/* ════════════════════════ CENTER PANEL ══════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   PDF VIEWER - top half of the right panel
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Holds three mutually exclusive children that app.js swaps with .hidden:
+   the empty state, the compiling animation, and the PDF <iframe>. The dark
+   neutral (not --bg-base) reads as a light-table behind a white page. */
 .pdf-viewport {
   flex: 1;
   position: relative;
@@ -684,7 +869,8 @@ body {
   background: #111827;
 }
 
-/* PDF toolbar actions */
+/* PDF toolbar actions - filled counterpart to .header-btn, used for Download
+   and Open-in-new-tab, which only appear after a successful compile. */
 .toolbar-btn {
   display: flex;
   align-items: center;
@@ -702,7 +888,7 @@ body {
 }
 .toolbar-btn:hover { border-color: var(--accent-500); color: var(--accent-400); background: var(--accent-glow); }
 
-/* Empty State */
+/* Empty State - shown before the first compile. */
 .pdf-empty-state {
   display: flex;
   flex-direction: column;
@@ -710,7 +896,7 @@ body {
   gap: 14px;
   padding: 40px 24px;
   text-align: center;
-  max-width: 320px;
+  max-width: 320px;   /* keep the explanatory copy at a readable line length */
 }
 
 .empty-state-illustration {
@@ -734,7 +920,10 @@ body {
   line-height: 1.6;
 }
 
-/* Compiling State */
+/* ── Compiling state ────────────────────────────────────────────────────────
+   A LaTeX run can take many seconds and the backend streams no progress, so
+   this is a deliberately busy indeterminate animation plus a live elapsed
+   timer - the timer is what tells the user the app has not frozen. */
 .pdf-compiling-state {
   display: flex;
   flex-direction: column;
@@ -744,6 +933,8 @@ body {
   text-align: center;
 }
 
+/* Stacking context for the three concentric rings, which are absolutely
+   positioned and centred by this flex box. */
 .compile-rings {
   position: relative;
   width: 80px;
@@ -753,13 +944,17 @@ body {
   justify-content: center;
 }
 
+/* Each ring is a circle with only its top border coloured, so rotating it
+   reads as an arc chasing its tail. */
 .ring {
   position: absolute;
   border-radius: 50%;
   border: 2px solid transparent;
   border-top-color: var(--accent-500);
-  animation: spin linear infinite;
+  animation: spin linear infinite;   /* duration is set per-ring below */
 }
+/* Different speeds and one reversed direction stop the three rings from ever
+   locking into a single apparent shape. */
 .ring-1 { width: 80px; height: 80px; animation-duration: 1s; border-top-color: var(--accent-500); }
 .ring-2 { width: 60px; height: 60px; animation-duration: 0.8s; animation-direction: reverse; border-top-color: var(--accent-400); opacity: 0.7; }
 .ring-3 { width: 40px; height: 40px; animation-duration: 0.6s; border-top-color: var(--accent-300); opacity: 0.5; }
@@ -770,6 +965,8 @@ body {
   color: var(--text-primary);
 }
 .compiling-desc { font-size: 13px; color: var(--text-secondary); }
+/* Monospaced and tabular by nature of the font, so the seconds counter does
+   not shuffle sideways as it ticks. */
 .compile-timer {
   font-size: 22px;
   font-weight: 700;
@@ -778,7 +975,8 @@ body {
   letter-spacing: -0.5px;
 }
 
-/* PDF Frame */
+/* PDF Frame - the browser's built-in PDF viewer inside an <iframe>. White
+   background so the frame does not flash dark before the PDF paints. */
 .pdf-frame {
   width: 100%;
   height: 100%;
@@ -786,9 +984,13 @@ body {
   background: #fff;
 }
 
-/* ════════════════════════ RIGHT PANEL – LOG ══════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   COMPILE LOG - bottom half of the right panel
+   ═══════════════════════════════════════════════════════════════ */
 
-/* Log Filters */
+/* ── Log filters ────────────────────────────────────────────────────────────
+   All / Errors / Warnings. .filter-btn is also reused for the "Toggle Log"
+   button in the PDF toolbar, so keep it generic. */
 .log-filters {
   display: flex;
   gap: 4px;
@@ -808,8 +1010,12 @@ body {
   transition: all var(--transition-fast);
 }
 .filter-btn:hover { border-color: var(--border-muted); color: var(--text-primary); }
+/* app.js keeps exactly one filter button carrying .active. */
 .filter-btn.active { background: var(--bg-elevated); border-color: var(--border-muted); color: var(--text-primary); }
 
+/* Count pill inside a filter button. min-width + centring keep single- and
+   triple-digit counts the same visual weight so the toolbar does not reflow
+   as numbers change. */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -824,7 +1030,9 @@ body {
 .badge-error { background: var(--error-bg); color: var(--error-text); border: 1px solid var(--error-border); }
 .badge-warn  { background: var(--warn-bg);  color: var(--warn-text);  border: 1px solid var(--warn-border); }
 
-/* Log Summary */
+/* ── Log summary ────────────────────────────────────────────────────────────
+   One-line verdict plus elapsed time. app.js rewrites the whole className to
+   "log-summary <success|error>", so the modifiers must remain single classes. */
 .log-summary {
   display: flex;
   align-items: center;
@@ -839,7 +1047,9 @@ body {
 .log-summary.success { background: var(--success-bg); border-bottom-color: var(--success-border); }
 .log-summary.error   { background: var(--error-bg);   border-bottom-color: var(--error-border); }
 
-/* Log Container */
+/* ── Log container ──────────────────────────────────────────────────────────
+   The scrolling list of parsed entries. Monospaced because the contents are
+   compiler output, where alignment carries meaning. */
 .log-container {
   flex: 1;
   overflow-y: auto;
@@ -848,6 +1058,8 @@ body {
   font-size: 12px;
 }
 
+/* Placeholder inside the mono container - reset to the UI font because this is
+   prose written by us, not compiler output. */
 .log-empty {
   padding: 24px;
   text-align: center;
@@ -856,7 +1068,11 @@ body {
   font-family: var(--font-sans);
 }
 
-/* Log Entry */
+/* ── Log entry ──────────────────────────────────────────────────────────────
+   One parsed diagnostic. app.js sets `log-entry <level>` where level is one of
+   error / warning / badbox / info, and the modifiers below tint the row from
+   the matching semantic ramp. The transparent left border is a placeholder so
+   applying a level does not shift the text by 3px. */
 .log-entry {
   display: flex;
   flex-direction: column;
@@ -879,6 +1095,7 @@ body {
 .log-entry.error   { background: var(--error-bg); border-left-color: var(--error-text); }
 .log-entry.warning { background: var(--warn-bg);  border-left-color: var(--warn-text); }
 .log-entry.badbox  { background: var(--info-bg);  border-left-color: var(--info-text); }
+/* "info" gets a grey stripe and no tint - it is context, not a problem. */
 .log-entry.info    { border-left-color: var(--border-muted); }
 
 .log-entry-header {
@@ -901,12 +1118,17 @@ body {
 .log-level-badge.warning { background: var(--warn-bg);    color: var(--warn-text);    border: 1px solid var(--warn-border); }
 .log-level-badge.badbox  { background: var(--info-bg);    color: var(--info-text);    border: 1px solid var(--info-border); }
 
+/* "main.tex:42" locator, when the parser could extract one. */
 .log-file-line {
   font-size: 10.5px;
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
 
+/* pre-wrap, not pre: TeX messages carry meaningful line breaks but must still
+   wrap inside this narrow panel. break-word handles the unbroken paths and
+   control sequences TeX emits, which would otherwise force a horizontal
+   scrollbar on the whole log. */
 .log-message {
   color: var(--text-primary);
   font-size: 12px;
@@ -918,6 +1140,9 @@ body {
 .log-entry.warning .log-message { color: var(--warn-text); }
 .log-entry.badbox  .log-message { color: var(--info-text); }
 
+/* The source excerpt TeX prints under an error. break-all rather than
+   break-word because this is a raw fragment where any character may be a
+   break point. */
 .log-context {
   font-size: 11px;
   color: var(--text-muted);
@@ -928,11 +1153,15 @@ body {
   word-break: break-all;
 }
 
-/* Raw Log */
+/* ── Raw log ────────────────────────────────────────────────────────────────
+   Collapsed <details> holding the unparsed .log - the escape hatch when the
+   parser missed something, and what a user pastes into a bug report. */
 .raw-log-details {
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
+/* list-style:none removes the native disclosure marker so the ::before arrow
+   below can replace it. */
 .raw-log-toggle {
   padding: 8px 14px;
   font-size: 11px;
@@ -947,6 +1176,7 @@ body {
 }
 .raw-log-toggle:hover { color: var(--text-secondary); }
 .raw-log-toggle::before { content: '▶'; font-size: 9px; transition: transform var(--transition-fast); }
+/* Rotating one glyph avoids swapping content, which would not animate. */
 details[open] .raw-log-toggle::before { transform: rotate(90deg); }
 
 .raw-log-pre {
@@ -955,14 +1185,17 @@ details[open] .raw-log-toggle::before { transform: rotate(90deg); }
   color: var(--text-muted);
   background: var(--bg-base);
   padding: 10px 14px;
-  max-height: 200px;
+  max-height: 200px;   /* a real .log is thousands of lines - cap it and scroll */
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
   line-height: 1.6;
 }
 
-/* ════════════════════════ STATUS BAR ════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   STATUS BAR - persistent footer: session, file count, last result
+   ═══════════════════════════════════════════════════════════════ */
+
 .status-bar {
   height: var(--statusbar-height);
   background: var(--bg-surface);
@@ -977,9 +1210,17 @@ details[open] .raw-log-toggle::before { transform: rotate(90deg); }
 }
 .status-bar-right { display: flex; align-items: center; gap: 6px; }
 .status-separator { color: var(--border-default); }
+/* tabular-nums so the file count does not nudge its neighbours as it changes. */
 .status-item { font-variant-numeric: tabular-nums; }
 
-/* ════════════════════════ TOAST SYSTEM ══════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   TOAST SYSTEM - transient notifications, created by app.js
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Offset above the status bar so a toast never covers it. pointer-events:none
+   on the container is essential: it spans a corner of the screen, and without
+   this it would swallow clicks aimed at the panels underneath - individual
+   toasts opt back in below. */
 .toast-container {
   position: fixed;
   bottom: calc(var(--statusbar-height) + 12px);
@@ -1003,10 +1244,11 @@ details[open] .raw-log-toggle::before { transform: rotate(90deg); }
   color: var(--text-primary);
   font-size: 13px;
   max-width: 340px;
-  pointer-events: all;
-  animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: all;   /* re-enable clicks the container turned off */
+  animation: toastIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);  /* overshoot easing */
 }
 
+/* app.js builds the element as `toast <type>`, where type is one of these. */
 .toast.success { border-color: var(--success-border); background: var(--success-bg); }
 .toast.error   { border-color: var(--error-border);   background: var(--error-bg); }
 .toast.warning { border-color: var(--warn-border);    background: var(--warn-bg); }
@@ -1019,6 +1261,9 @@ details[open] .raw-log-toggle::before { transform: rotate(90deg); }
   to   { opacity: 1; transform: translateX(0) scale(1); }
 }
 
+/* app.js adds .hiding, waits out this animation, then removes the node.
+   `forwards` holds the final frame so the toast does not flash back into view
+   during that gap. */
 .toast.hiding {
   animation: toastOut 0.25s ease forwards;
 }
@@ -1026,5 +1271,11 @@ details[open] .raw-log-toggle::before { transform: rotate(90deg); }
   to { opacity: 0; transform: translateX(20px) scale(0.95); }
 }
 
-/* ════════════════════════ UTILITIES ═════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════
+   UTILITIES
+   ═══════════════════════════════════════════════════════════════ */
+
+/* The app's universal show/hide switch - app.js toggles it on panels, buttons,
+   empty states and the PDF frame. !important is intentional: it must beat the
+   `display: flex` that most of those elements set on themselves. */
 .hidden { display: none !important; }
