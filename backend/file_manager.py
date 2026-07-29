@@ -114,13 +114,39 @@ def get_session_dir(session_id: str) -> Path:
     Distinguishes 400 (the id is malformed, i.e. the caller is wrong or hostile)
     from 404 (the id is well-formed but the session expired or was deleted), so
     the frontend can offer "start a new project" only in the second case.
+
+    The returned path is *looked up* among the directories that already exist
+    rather than built by joining the request string onto ``UPLOAD_DIR``. Two
+    reasons:
+
+    * **Defence in depth.** The regex above already makes traversal impossible,
+      but this makes it structural: the only paths this function can ever return
+      are real immediate children of ``UPLOAD_DIR``. That stays true even if
+      someone later loosens the pattern.
+    * It removes the request string from the path expression entirely, which is
+      also what static analysers need to see (see SECURITY.md).
     """
     if not is_valid_session_id(session_id):
         raise HTTPException(status_code=400, detail="Invalid session ID format.")
-    session_dir = UPLOAD_DIR / session_id
-    if not session_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
-    return session_dir
+
+    # Match against real directory entries. Sessions are few (one user, and the
+    # TTL sweep removes idle ones), so this scan is negligible.
+    for entry in _existing_session_dirs():
+        if entry.name == session_id:
+            return entry
+    raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+
+
+def _existing_session_dirs() -> list[Path]:
+    """Every session directory that currently exists under ``UPLOAD_DIR``.
+
+    Returns an empty list when the upload directory has not been created yet,
+    so callers never have to special-case first-run.
+    """
+    try:
+        return [child for child in UPLOAD_DIR.iterdir() if child.is_dir()]
+    except (OSError, FileNotFoundError):
+        return []
 
 
 def touch_session(session_id: str) -> None:
@@ -130,13 +156,19 @@ def touch_session(session_id: str) -> None:
     a marker that could not be written must never turn a working request into an
     error, and the worst consequence is that an idle-looking session is cleaned
     up a little early.
+
+    Like ``get_session_dir``, the directory is looked up among the ones that
+    exist rather than built from the request string.
     """
-    session_dir = UPLOAD_DIR / session_id
-    if session_dir.exists():
-        try:
-            (session_dir / ".last_access").write_text(str(time.time()))
-        except OSError:
-            pass
+    if not is_valid_session_id(session_id):
+        return
+    for session_dir in _existing_session_dirs():
+        if session_dir.name == session_id:
+            try:
+                (session_dir / ".last_access").write_text(str(time.time()))
+            except OSError:
+                pass
+            return
 
 
 def delete_session(session_id: str) -> None:
@@ -145,10 +177,17 @@ def delete_session(session_id: str) -> None:
     Silent rather than raising because the callers are best-effort cleanup
     paths — the browser's tab-close request and the rollback after a failed
     upload — where there is nobody left to report an error to.
+
+    This one deletes a whole tree, so it is the most important place to look the
+    directory up rather than construct it: ``rmtree`` can only ever be handed a
+    path that ``UPLOAD_DIR.iterdir()` itself produced.
     """
     if not is_valid_session_id(session_id):
         return
-    shutil.rmtree(UPLOAD_DIR / session_id, ignore_errors=True)
+    for session_dir in _existing_session_dirs():
+        if session_dir.name == session_id:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            return
 
 
 def cleanup_stale_sessions() -> int:
