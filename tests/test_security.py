@@ -140,6 +140,57 @@ class TestPathTraversal:
             # pass the check above, so assert the file's content never leaks.
             assert "ALLOW_SHELL_ESCAPE" not in res.text  # config.py content must not leak
 
+    def test_static_route_still_serves_real_assets(self, client):
+        """The traversal guard must not break the UI it protects.
+
+        The route rejects unsafe path components before building a path, so this
+        is the other half of that check: ordinary nested asset paths (dots,
+        dashes, sub-directories) must still be served, or the app loads with no
+        stylesheet and no editor.
+        """
+        for asset in ("/static/app.js", "/static/style.css"):
+            assert client.get(asset).status_code == 200, asset
+
+    def test_safe_path_component_rejects_traversal_tokens(self):
+        """The static route's component allow-list rejects every escape token.
+
+        ``..`` is the subtle one: it is made only of characters that a naive
+        ``[A-Za-z0-9._-]+`` allow-list permits, so the pattern must additionally
+        require at least one non-dot character.
+        """
+        from backend.main import _SAFE_PATH_COMPONENT as pattern
+
+        for allowed in ("app.js", "vendor", "style.css", ".gitkeep", "a-b_c.1"):
+            assert pattern.fullmatch(allowed), f"must allow {allowed!r}"
+        for rejected in ("..", ".", "...", "C:", "file.js:stream", "a b", ""):
+            assert not pattern.fullmatch(rejected), f"must reject {rejected!r}"
+
+    def test_session_lookup_cannot_leave_upload_dir(self, client, tmp_path):
+        """A session directory is looked up, never built from the request.
+
+        get_session_dir/touch_session/delete_session match the id against real
+        entries of UPLOAD_DIR, so the only paths they can return are immediate
+        children of it. That holds even for ids that pass the UUID regex, and it
+        is what makes a traversal structurally impossible rather than merely
+        filtered.
+        """
+        import backend.file_manager as fm
+        from fastapi import HTTPException
+
+        # Well-formed but non-existent: must 404, never create or touch anything.
+        ghost = "deadbeef-0000-4000-8000-000000000000"
+        with pytest.raises(HTTPException) as exc:
+            fm.get_session_dir(ghost)
+        assert exc.value.status_code == 404
+        fm.touch_session(ghost)      # must be a silent no-op
+        fm.delete_session(ghost)     # must be a silent no-op
+
+        # A real session resolves to a direct child of UPLOAD_DIR.
+        session_id = fm.create_session()
+        resolved = fm.get_session_dir(session_id)
+        assert resolved.parent.resolve() == fm.UPLOAD_DIR.resolve()
+        fm.delete_session(session_id)
+
     def test_file_api_encoded_traversal_blocked(self, client):
         """Reading through the editor API cannot escape the session workspace.
 

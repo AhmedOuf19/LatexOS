@@ -119,6 +119,14 @@ logger = logging.getLogger("latex_studio")
 # port on loopback is equally "this machine".
 _LOCAL_ORIGIN_RE = re.compile(r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$")
 
+# One component of a static asset path (e.g. "vendor", "app.js"). Deliberately an
+# allow-list of letters, digits, dot, dash and underscore, and it must contain at
+# least one character that is NOT a dot - so "." and ".." are rejected, while
+# "app.js" and ".gitkeep" are fine. A component cannot therefore be an absolute
+# path, a "C:" drive prefix or an NTFS stream name ("file.js:stream"): those are
+# refused before any path is built, rather than normalised away afterwards.
+_SAFE_PATH_COMPONENT = re.compile(r"(?=.*[A-Za-z0-9_-])[A-Za-z0-9._-]+")
+
 
 # ─── In-memory session state ─────────────────────────────────────────────────
 # Plain module-level dicts are safe here only because the app is single-process
@@ -621,15 +629,25 @@ async def serve_frontend(request: Request):
 async def serve_static(filename: str):
     """Serve a frontend asset, strictly confined to the frontend directory.
 
-    Unlike a naive join, the resolved path must stay inside FRONTEND_DIR, so
-    ``/%2e%2e/backend/config.py`` and similar traversals return 404.
+    The request string is never joined onto a directory. Each path component is
+    checked against a strict allow-list of characters first, so ``..``, absolute
+    paths, drive letters and NTFS stream names are rejected outright rather than
+    being normalised away afterwards. The resolved result is then still required
+    to sit inside FRONTEND_DIR - two independent guards, either of which alone
+    would stop ``/%2e%2e/backend/config.py``.
     """
     frontend_root = FRONTEND_DIR.resolve()
-    # resolve() BOTH sides before comparing: it collapses ".." and follows
-    # symlinks, so the containment check sees the real destination. relative_to()
-    # is used instead of a string prefix test because "frontend-backup/" starts
-    # with "frontend" but is a different directory.
-    target = (FRONTEND_DIR / filename).resolve()
+
+    # Reject-then-build, rather than build-then-check.
+    components = [part for part in re.split(r"[\\/]+", filename) if part]
+    if not components or any(not _SAFE_PATH_COMPONENT.fullmatch(part) for part in components):
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    target = frontend_root.joinpath(*components).resolve()
+    # Belt and braces: even with only safe components, confirm the result did not
+    # escape (e.g. via a symlink inside the frontend directory). relative_to() is
+    # used instead of a string prefix test because "frontend-backup/" starts with
+    # "frontend" but is a different directory.
     try:
         target.relative_to(frontend_root)
     except ValueError:
