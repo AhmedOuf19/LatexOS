@@ -191,6 +191,42 @@ class TestPathTraversal:
         assert resolved.parent.resolve() == fm.UPLOAD_DIR.resolve()
         fm.delete_session(session_id)
 
+    def test_session_exists_is_a_lookup_not_a_join(self):
+        """``session_exists`` answers from the directory listing, not a path.
+
+        It is the existence check used by the write endpoint (to refuse a write
+        into a session deleted while the body was being read) and by the
+        background cleaner. Building ``UPLOAD_DIR / session_id`` there would put
+        a request string back into a path expression, which is precisely what
+        the rest of this module avoids.
+        """
+        import backend.file_manager as fm
+
+        session_id = fm.create_session()
+        assert fm.session_exists(session_id) is True
+        fm.delete_session(session_id)
+        assert fm.session_exists(session_id) is False
+
+        # Malformed ids are rejected on shape alone - never probed on disk.
+        for malformed in ("../../etc", "..", "", "not-a-uuid", "a/b"):
+            assert fm.session_exists(malformed) is False, malformed
+
+    def test_main_builds_no_paths_from_request_data(self):
+        """No route may join a request value onto UPLOAD_DIR.
+
+        A source-level guard, because this is a whole class of bug rather than
+        one line: every session path must come from a lookup helper. The one
+        legitimate construction lives in ``create_session``, where the id is a
+        freshly generated uuid4 and not attacker-controlled.
+        """
+        import re
+        from pathlib import Path
+
+        source = (Path(__file__).parent.parent / "backend" / "main.py").read_text(encoding="utf-8")
+        code = [line for line in source.splitlines() if not line.lstrip().startswith("#")]
+        offenders = [line.strip() for line in code if re.search(r"UPLOAD_DIR\s*/", line)]
+        assert not offenders, f"build paths via a lookup helper instead: {offenders}"
+
     def test_file_api_encoded_traversal_blocked(self, client):
         """Reading through the editor API cannot escape the session workspace.
 

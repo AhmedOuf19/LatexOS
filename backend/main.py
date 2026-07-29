@@ -101,6 +101,7 @@ from backend.file_manager import (
     list_session_files,
     read_file_content,
     save_uploaded_files,
+    session_exists,
     touch_session,
     write_file_content,
 )
@@ -226,10 +227,11 @@ async def _session_gc_loop() -> None:
             # event loop for the same reason compiles are (see /api/compile).
             removed = await run_in_threadpool(cleanup_stale_sessions)
             # Snapshot the keys first – popping while iterating the dict itself
-            # would raise RuntimeError.
-            for sid in [s for s in _last_pdf if not (UPLOAD_DIR / s).exists()]:
+            # would raise RuntimeError. Existence is looked up rather than tested
+            # on a constructed path, matching the rest of the session handling.
+            for sid in [s for s in _last_pdf if not session_exists(s)]:
                 _last_pdf.pop(sid, None)
-            for sid in [s for s in _last_log if not (UPLOAD_DIR / s).exists()]:
+            for sid in [s for s in _last_log if not session_exists(s)]:
                 _last_log.pop(sid, None)
             if removed:
                 logger.info(f"Background cleanup removed {removed} stale session(s).")
@@ -566,8 +568,9 @@ async def write_file_endpoint(session_id: str, filepath: str, request: Request):
     content = b"".join(chunks)
 
     # Re-check existence after reading the body so a concurrent cleanup cannot be
-    # "resurrected" into a ghost session by the write.
-    if not (UPLOAD_DIR / session_id).exists():
+    # "resurrected" into a ghost session by the write. Looked up rather than
+    # joined onto UPLOAD_DIR, for the same reason as everywhere else here.
+    if not session_exists(session_id):
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
     write_file_content(session_dir, filepath, content)
     touch_session(session_id)
