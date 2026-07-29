@@ -184,6 +184,39 @@ class TestLogParser:
         result = parse_log(raw_log)
         assert any("Shell-escape" in e.message for e in result.errors)
 
+    def test_shell_escape_advisory_is_not_an_error(self):
+        """An advisory mention of shell-escape must NOT be reported as an error.
+
+        Regression: epstopdf (pulled in by graphicx, and therefore by tcolorbox,
+        TikZ and most real documents) prints
+
+            Package epstopdf Warning: Shell escape feature is not enabled.
+
+        on every healthy compile, purely to say it *could* also convert EPS. The
+        detector matched it and raised a hard error on documents that had
+        compiled perfectly. That is worse than staying silent: a user who learns
+        the error panel cries wolf will ignore the real errors in it too.
+        """
+        raw_log = ("Package epstopdf Warning: Shell escape feature is not enabled.\n"
+                   "Output written on showcase.pdf (1 page).\n")
+        result = parse_log(raw_log)
+        assert not result.errors, [e.message for e in result.errors]
+
+    @pytest.mark.parametrize("failure_line", [
+        "Package minted Error: You must invoke LaTeX with the -shell-escape flag.",
+        "! Package minted Error: minted executable is unavailable or disabled.",
+        r"runsystem(pygmentize)...disabled",
+    ])
+    def test_real_shell_escape_failures_still_reported(self, failure_line):
+        """Narrowing the advisory case must not silence the genuine ones.
+
+        The three phrasings that mean a package actually gave up for want of
+        shell-escape - checked together so the fix above cannot be "simplified"
+        into suppressing the whole category.
+        """
+        result = parse_log(failure_line + "\n")
+        assert any("Shell-escape" in e.message for e in result.errors), failure_line
+
     def test_bookmark_hint(self):
         """The \\@@BOOKMARK runaway must be explained in plain language.
 

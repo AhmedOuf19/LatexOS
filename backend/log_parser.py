@@ -397,31 +397,57 @@ def _detect_bibliography_issues(raw_log: str, result: ParsedLog) -> None:
         ))
 
 
-# Signs that the document needs shell-escape (minted, svg, gnuplot…).
+# Signs that the document ACTUALLY FAILED for want of shell-escape.
+#
+# Deliberately narrow. Several packages merely *mention* shell-escape while
+# working perfectly - epstopdf, for instance, emits
+#
+#     Package epstopdf Warning: Shell escape feature is not enabled.
+#
+# on every document that loads graphicx, purely to say it could also convert EPS
+# if it were on. Treating that as an error made the app cry wolf on documents
+# that compiled flawlessly, which is worse than saying nothing: a user who learns
+# to ignore the error panel will ignore the real errors too. So we match only the
+# messages that mean a package gave up.
 _RE_SHELL_ESCAPE_NEEDED = re.compile(
     r"minted executable is unavailable or disabled"
-    r"|Shell escape (?:disabled|feature is not enabled)"
     r"|You must invoke LaTeX with the -shell-escape flag"
-    r"|\\write18 is disabled",
+    r"|\\write18 is disabled"
+    r"|runsystem\([^)]*\)\.{3}disabled",
+    re.IGNORECASE,
+)
+
+# Packages that name shell-escape only as an aside. If a hit came from one of
+# these lines, it is informational, not a failure.
+_RE_SHELL_ESCAPE_ADVISORY = re.compile(
+    r"Package epstopdf Warning: Shell escape feature is not enabled",
     re.IGNORECASE,
 )
 
 
 def _detect_shell_escape_needed(raw_log: str, result: ParsedLog) -> None:
-    """Tell the user exactly how to fix a shell-escape failure.
+    """Tell the user exactly how to fix a genuine shell-escape failure.
 
     Packages like minted have to run an external program, which is blocked
     unless shell-escape is enabled. The raw LaTeX message never says how to
     enable it, so we add one actionable entry.
+
+    Advisory mentions (see ``_RE_SHELL_ESCAPE_ADVISORY``) are ignored: they
+    appear on perfectly healthy documents and an error the user cannot act on
+    only teaches them to distrust the error panel.
     """
-    if _RE_SHELL_ESCAPE_NEEDED.search(raw_log):
-        result.errors.append(LogEntry(
-            level="error",
-            message="This document needs shell-escape (minted / svg / gnuplot). "
-                    "Tick the 'Shell-escape' box next to the Compile button and "
-                    "compile again. Only enable it for documents you trust - it "
-                    "lets the document run programs on your computer.",
-        ))
+    for line in raw_log.splitlines():
+        if _RE_SHELL_ESCAPE_ADVISORY.search(line):
+            continue
+        if _RE_SHELL_ESCAPE_NEEDED.search(line):
+            result.errors.append(LogEntry(
+                level="error",
+                message="This document needs shell-escape (minted / svg / gnuplot). "
+                        "Tick the 'Shell-escape' box next to the Compile button and "
+                        "compile again. Only enable it for documents you trust - it "
+                        "lets the document run programs on your computer.",
+            ))
+            return
 
 
 # hyperref bookmark broken by a fragile command in a section title.
