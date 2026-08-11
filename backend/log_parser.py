@@ -484,8 +484,11 @@ def _detect_unicode_problem(raw_log: str, result: ParsedLog) -> None:
     """Explain "Unicode character ... not set up for use with LaTeX".
 
     This happens with pdflatex, which only understands a limited character set.
-    Switching the engine to xelatex or lualatex fixes it outright, and this app
-    has an engine selector — so say so.
+    Switching the engine to xelatex or lualatex fixes it outright, so say so.
+
+    The wording names the *engine* rather than a place to click. This message is
+    read in the web UI (which has an engine selector), but also by the CLI and by
+    AI agents calling ``backend.cli`` — and "top right" points at nothing there.
     """
     chars = {m.group(2).upper() for m in _RE_UNICODE_CHAR.finditer(raw_log)}
     if not chars:
@@ -494,8 +497,8 @@ def _detect_unicode_problem(raw_log: str, result: ParsedLog) -> None:
     result.errors.append(LogEntry(
         level="error",
         message=f"Your document uses Unicode characters ({sample}) that pdflatex "
-                f"cannot typeset. Easiest fix: change the engine (top right) to "
-                f"xelatex or lualatex, which support Unicode directly. "
+                f"cannot typeset. Easiest fix: compile with the xelatex or "
+                f"lualatex engine instead, which support Unicode directly. "
                 f"Alternatively replace them with LaTeX commands, "
                 f"e.g. $\\theta$ instead of a literal Greek theta.",
     ))
