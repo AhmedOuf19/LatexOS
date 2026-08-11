@@ -98,6 +98,37 @@ class TestLogParser:
     excerpts rather than invented text.
     """
 
+    def test_badbox_attributed_after_stack_unbalances(self):
+        """A problem is still traced to its source file after stray ')' in log
+        prose have emptied the parenthesis stack.
+
+        Real logs unbalance constantly — a book-length document ended up with
+        all 119 of its overfull boxes attributed to no file at all, which makes
+        "where is this coming from?" unanswerable. The last authored .tex opened
+        is carried forward as a fallback, so attribution survives.
+        """
+        raw = (
+            "(c:/proj/main.tex\n"
+            "(c:/tex/texmf-dist/tex/latex/base/book.cls) closed already)\n"
+            ")))) stray closes from prose\n"
+            "(c:/proj/chapter6.tex\n"
+            "Overfull \\hbox (9.4pt too wide) in paragraph at lines 9--9\n"
+        )
+        result = parse_log(raw)
+        assert len(result.badboxes) == 1
+        assert result.badboxes[0].file.endswith("chapter6.tex"), (
+            f"expected chapter6.tex, got {result.badboxes[0].file!r}"
+        )
+
+    def test_distribution_files_are_not_treated_as_user_source(self):
+        """A .sty/.cls inside the TeX distribution must never become the
+        fallback attribution — the user cannot act on 'the error is in book.cls'."""
+        from backend.log_parser import _is_user_source
+
+        assert _is_user_source("c:/proj/chapter1.tex")
+        assert not _is_user_source("c:/tex/texmf-dist/tex/latex/base/book.cls")
+        assert not _is_user_source("c:/tex/texmf-dist/tex/latex/foo/foo.sty")
+
     def test_clean_log_has_no_errors(self):
         """A successful run produces zero errors and zero warnings.
 
