@@ -7,11 +7,11 @@ and report what is wrong and where.
 
 ## Install
 
-1. Install LaTeX Studio somewhere permanent, e.g. `C:\Claude Skills\latex`:
+1. Install LaTeX Studio somewhere permanent, e.g. `C:\tools\LatexOS`:
 
    ```bat
-   git clone https://github.com/AhmedOuf19/LatexOS.git "C:\Claude Skills\latex"
-   cd /d "C:\Claude Skills\latex"
+   git clone https://github.com/AhmedOuf19/LatexOS.git "C:\tools\LatexOS"
+   cd /d "C:\tools\LatexOS"
    install.bat
    ```
 
@@ -23,7 +23,7 @@ and report what is wrong and where.
    ```
 
 3. **Edit the paths in `SKILL.md`** if you installed anywhere other than
-   `C:\Claude Skills\latex` — the file names that location several times.
+   `C:\tools\LatexOS` — the file names that location several times.
 
 4. Start a new Claude Code session. Skills load at startup.
 
