@@ -356,13 +356,31 @@ def _update_file_stack(line: str, stack: List[str]) -> None:
 
 
 # A path inside the TeX distribution is a package, not something the user wrote.
-_RE_DISTRIBUTION_PATH = re.compile(r"texmf|/tex/(latex|generic|plain)/", re.IGNORECASE)
+# "texmf" must be a whole path component: a project folder called "mytexmf" is
+# the author's, and excluding it would lose the attribution entirely. The
+# "/tex/latex/" form catches MiKTeX layouts that have no texmf directory.
+_RE_DISTRIBUTION_PATH = re.compile(
+    r"(?:^|[/\\])texmf[^/\\]*[/\\]|[/\\]tex[/\\](?:latex|generic|plain)[/\\]",
+    re.IGNORECASE,
+)
+
+# Anything the author can actually open and edit. Their own .sty/.cls counts:
+# "the error is in YOUR mystyle.sty" is actionable, unlike "…in book.cls".
+_USER_SOURCE_SUFFIXES = (".tex", ".sty", ".cls", ".ltx")
 
 
 def _is_user_source(path: str) -> bool:
     """True if ``path`` looks like a file the *author* wrote, rather than a
-    package shipped with the TeX distribution."""
-    return path.lower().endswith(".tex") and not _RE_DISTRIBUTION_PATH.search(path)
+    package shipped with the TeX distribution.
+
+    Deliberately decided by location rather than by file type: authors write
+    ``.sty`` and ``.cls`` files too, and the useful distinction is "can the user
+    open this and change it?", not "is it a class file?".
+    """
+    return (
+        path.lower().endswith(_USER_SOURCE_SUFFIXES)
+        and not _RE_DISTRIBUTION_PATH.search(path)
+    )
 
 
 def _last_user_file(line: str, current: str) -> str:
