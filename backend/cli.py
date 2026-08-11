@@ -107,6 +107,11 @@ def _result_to_dict(result, workspace: Path, main_tex: str, pdf: Path | None) ->
         "returncode": result.returncode,
         "errors": entries(log.errors) if log else [],
         "warnings": entries(log.warnings) if log else [],
+        # Over/underfull boxes are cosmetic (the PDF is valid either way), but a
+        # caller diagnosing layout problems needs them - and they carry the line
+        # numbers that say WHERE the text overflows. Excluded from the human
+        # report, which would otherwise be hundreds of lines long.
+        "badboxes": entries(log.badboxes) if log else [],
         "log_path": str(result.log_path) if result.log_path else None,
     }
 

@@ -164,6 +164,8 @@ def parse_log(raw_log: str) -> ParsedLog:
     # A parenthesis stack tracks the file currently being processed, so an error
     # is attributed to the most-recently-opened file rather than a guess.
     file_stack: List[str] = []
+    # Survives the stack going unbalanced; see _last_user_file.
+    fallback_file = ""
 
     index = 0
     total_lines = len(lines)
@@ -174,7 +176,11 @@ def parse_log(raw_log: str) -> ParsedLog:
         # happen before the branches below, because TeX packs file openings and
         # message text onto the same line ("(./ch1.tex Overfull \hbox …").
         _update_file_stack(line, file_stack)
-        current_file = file_stack[-1] if file_stack else ""
+        fallback_file = _last_user_file(line, fallback_file)
+        # Prefer the stack (precise), fall back to the last authored file opened
+        # (robust). Without the fallback, everything after the stack first
+        # unbalances is reported with no location at all.
+        current_file = file_stack[-1] if file_stack else fallback_file
 
         # ── file:line: error  (the -file-line-error format) ──────────────────
         fileline_match = _RE_FILELINE_ERROR.match(line)
@@ -349,6 +355,54 @@ def _update_file_stack(line: str, stack: List[str]) -> None:
         idx += 1
 
 
+# A path inside the TeX distribution is a package, not something the user wrote.
+# "texmf" must be a whole path component: a project folder called "mytexmf" is
+# the author's, and excluding it would lose the attribution entirely. The
+# "/tex/latex/" form catches MiKTeX layouts that have no texmf directory.
+_RE_DISTRIBUTION_PATH = re.compile(
+    r"(?:^|[/\\])texmf[^/\\]*[/\\]|[/\\]tex[/\\](?:latex|generic|plain)[/\\]",
+    re.IGNORECASE,
+)
+
+# Anything the author can actually open and edit. Their own .sty/.cls counts:
+# "the error is in YOUR mystyle.sty" is actionable, unlike "…in book.cls".
+_USER_SOURCE_SUFFIXES = (".tex", ".sty", ".cls", ".ltx")
+
+
+def _is_user_source(path: str) -> bool:
+    """True if ``path`` looks like a file the *author* wrote, rather than a
+    package shipped with the TeX distribution.
+
+    Deliberately decided by location rather than by file type: authors write
+    ``.sty`` and ``.cls`` files too, and the useful distinction is "can the user
+    open this and change it?", not "is it a class file?".
+    """
+    return (
+        path.lower().endswith(_USER_SOURCE_SUFFIXES)
+        and not _RE_DISTRIBUTION_PATH.search(path)
+    )
+
+
+def _last_user_file(line: str, current: str) -> str:
+    """Return the most recently opened *authored* file, carried forward.
+
+    The parenthesis stack is the precise mechanism, but it is fragile: stray
+    ``)`` characters in ordinary log prose pop entries that were never pushed,
+    and after a few hundred lines the stack is empty — which is why long
+    documents ended up with every over/underfull box attributed to no file at
+    all. This is the robust complement: once TeX opens ``chapter3.tex``,
+    everything that follows belongs to chapter 3 until another authored file
+    opens, regardless of how unbalanced the parentheses got.
+
+    Used only as a fallback, so precise stack attribution still wins when it is
+    available.
+    """
+    for candidate in _RE_FILE_OPEN.findall(line):
+        if _is_user_source(candidate):
+            current = candidate
+    return current
+
+
 # ─── Whole-log detectors (plain-English hints) ────────────────────────────────
 
 def _detect_missing_packages(raw_log: str, result: ParsedLog) -> None:
@@ -443,8 +497,9 @@ def _detect_shell_escape_needed(raw_log: str, result: ParsedLog) -> None:
             result.errors.append(LogEntry(
                 level="error",
                 message="This document needs shell-escape (minted / svg / gnuplot). "
-                        "Tick the 'Shell-escape' box next to the Compile button and "
-                        "compile again. Only enable it for documents you trust - it "
+                        "Enable shell-escape and compile again - in the web UI tick "
+                        "the 'Shell-escape' box, or pass --shell-escape on the "
+                        "command line. Only enable it for documents you trust - it "
                         "lets the document run programs on your computer.",
             ))
             return

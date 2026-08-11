@@ -98,6 +98,57 @@ class TestLogParser:
     excerpts rather than invented text.
     """
 
+    def test_badbox_attributed_after_stack_unbalances(self):
+        """A problem is still traced to its source file after stray ')' in log
+        prose have emptied the parenthesis stack.
+
+        Real logs unbalance constantly — a book-length document ended up with
+        all 119 of its overfull boxes attributed to no file at all, which makes
+        "where is this coming from?" unanswerable. The last authored .tex opened
+        is carried forward as a fallback, so attribution survives.
+        """
+        raw = (
+            "(c:/proj/main.tex\n"
+            "(c:/tex/texmf-dist/tex/latex/base/book.cls) closed already)\n"
+            ")))) stray closes from prose\n"
+            "(c:/proj/chapter6.tex\n"
+            "Overfull \\hbox (9.4pt too wide) in paragraph at lines 9--9\n"
+        )
+        result = parse_log(raw)
+        assert len(result.badboxes) == 1
+        assert result.badboxes[0].file.endswith("chapter6.tex"), (
+            f"expected chapter6.tex, got {result.badboxes[0].file!r}"
+        )
+
+    @pytest.mark.parametrize("path", [
+        # TinyTeX / TeX Live / MiKTeX, on Windows, Linux and macOS. Attribution
+        # must never land on a distribution file: "the error is in book.cls" is
+        # something the user can neither understand nor fix.
+        "c:/proj/tinytex/texmf-dist/tex/latex/base/book.cls",
+        "c:/Users/A/AppData/Local/Programs/MiKTeX/tex/latex/base/article.cls",
+        "/usr/share/texlive/texmf-dist/tex/latex/geometry/geometry.sty",
+        "/opt/homebrew/texlive/texmf-dist/tex/plain/base/plain.tex",
+        "c:/Users/A/texmf/tex/latex/local/mypkg.sty",   # local texmf tree
+    ])
+    def test_distribution_files_are_not_user_source(self, path):
+        from backend.log_parser import _is_user_source
+        assert not _is_user_source(path)
+
+    @pytest.mark.parametrize("path", [
+        "c:/proj/main.tex",
+        "c:/proj/chapters/ch1.tex",
+        "c:/Users/A/Documents/My Papers/paper.tex",
+        "c:/proj/mystyle.sty",        # the author's OWN style file
+        "c:/proj/myclass.cls",        # the author's OWN class file
+        "c:/proj/mytexmf/notes.tex",  # a folder merely *containing* "texmf"
+        "c:/proj/latex/ch1.tex",      # a folder merely named "latex"
+    ])
+    def test_authored_files_are_user_source(self, path):
+        """Authored .sty/.cls count too: unlike a distribution class, the user
+        can actually open and fix their own."""
+        from backend.log_parser import _is_user_source
+        assert _is_user_source(path)
+
     def test_clean_log_has_no_errors(self):
         """A successful run produces zero errors and zero warnings.
 
