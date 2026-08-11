@@ -6,13 +6,13 @@ description: Compile LaTeX to PDF locally. Use whenever the user wants LaTeX ren
 # LaTeX → PDF
 
 Compiles LaTeX to PDF on this machine using **LaTeX Studio**, installed at
-`C:\Claude Skills\latex`. It bundles its own Python and TeX distribution, so it
+`C:\tools\LatexOS`. It bundles its own Python and TeX distribution, so it
 works offline and does not depend on anything else being installed.
 
 ## The one command
 
 ```bat
-"C:\Claude Skills\latex\latex-pdf.bat" compile "<path-to.tex>" --engine xelatex --shell-escape --json
+"C:\tools\LatexOS\latex-pdf.bat" compile "<path-to.tex>" --engine xelatex --shell-escape --json
 ```
 
 **Use these defaults unless there is a reason not to.** This user's documents
@@ -39,7 +39,7 @@ file and line, instead of having to parse a human report.
 | A whole project folder (auto-finds the main file) | pass the directory instead of a file |
 | Untrusted document (see safety note) | drop `--shell-escape` |
 | Faster build, plain ASCII document | `--engine pdflatex` (the tool's own default) |
-| Check the toolchain is working | `"C:\Claude Skills\latex\latex-pdf.bat" check` |
+| Check the toolchain is working | `"C:\tools\LatexOS\latex-pdf.bat" check` |
 
 ## How to use it
 
@@ -65,7 +65,7 @@ Exit codes are the contract:
 | `0` | PDF produced | Report the path. **Still check `errors`** — LaTeX often emits a PDF despite recoverable errors. |
 | `1` | Compile failed, no PDF | Read `errors[]`, fix the cause, retry. |
 | `2` | Bad path / not a `.tex` | Check the file path. |
-| `3` | No LaTeX distribution | Tell the user to run `C:\Claude Skills\latex\install.bat`. |
+| `3` | No LaTeX distribution | Tell the user to run `C:\tools\LatexOS\install.bat`. |
 
 The JSON payload:
 
@@ -218,6 +218,6 @@ choice, so anything invoking the CLI directly stays safe.
   **directory**. Bibliographies and cross-references are resolved automatically
   — no need to run `bibtex`/`biber` or compile repeatedly.
 - To open the PDF for the user: `start "" "C:\path\to.pdf"`.
-- There is also a browser UI (`C:\Claude Skills\latex\Launch LaTeX Studio.bat`)
+- There is also a browser UI (`C:\tools\LatexOS\Launch LaTeX Studio.bat`)
   with a live editor and preview — mention it if the user wants to iterate on a
   document themselves rather than through you.
